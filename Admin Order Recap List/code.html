@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Rental Admin - Order Recap</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#ff0008",
+                        "primary-hover": "#d90007",
+                        "background-light": "#f8f5f5",
+                        "background-dark": "#230f0f",
+                        "surface-light": "#ffffff",
+                        "surface-dark": "#2d1b1b",
+                        "neutral-50": "#fef2f2",
+                        "neutral-100": "#fee2e2",
+                        "neutral-200": "#fecaca",
+                        "neutral-800": "#991b1b",
+                        "neutral-900": "#7f1d1d",
+                    },
+                    fontFamily: {
+                        display: ["Inter", "sans-serif"],
+                        sans: ["Inter", "sans-serif"],
+                    },
+                    borderRadius: {
+                        DEFAULT: "0.5rem",
+                        "lg": "0.75rem",
+                        "xl": "1rem",
+                        "full": "9999px",
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-background-light font-sans text-slate-900 antialiased selection:bg-primary/20 selection:text-primary">
+<div class="flex h-screen w-full overflow-hidden">
+<!-- Sidebar: Dark Mode as requested -->
+<aside class="flex w-64 flex-col bg-stone-900 text-white transition-all duration-300">
+<!-- Brand -->
+<div class="flex items-center gap-3 px-6 py-8">
+<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-lg shadow-primary/30">
+<span class="material-symbols-outlined text-2xl">local_taxi</span>
+</div>
+<div class="flex flex-col">
+<h1 class="font-display text-lg font-bold tracking-tight">Rental Admin</h1>
+<p class="text-xs font-medium text-stone-400">MVP Dashboard</p>
+</div>
+</div>
+<!-- Navigation -->
+<nav class="flex flex-1 flex-col gap-2 px-4 py-4">
+<a class="group flex items-center gap-3 rounded-lg px-4 py-3 text-stone-400 hover:bg-white/5 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">grid_view</span>
+<span class="font-medium">Dashboard</span>
+</a>
+<a class="group flex items-center gap-3 rounded-lg px-4 py-3 text-stone-400 hover:bg-white/5 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">directions_car</span>
+<span class="font-medium">Cars</span>
+</a>
+<a class="group flex items-center gap-3 rounded-lg bg-primary/10 px-4 py-3 text-primary transition-colors" href="#">
+<span class="material-symbols-outlined fill-1">receipt_long</span>
+<span class="font-medium">Orders</span>
+</a>
+<a class="group flex items-center gap-3 rounded-lg px-4 py-3 text-stone-400 hover:bg-white/5 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">group</span>
+<span class="font-medium">Customers</span>
+</a>
+<div class="my-4 h-px bg-white/10 mx-4"></div>
+<a class="group flex items-center gap-3 rounded-lg px-4 py-3 text-stone-400 hover:bg-white/5 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-medium">Settings</span>
+</a>
+</nav>
+<!-- User Profile -->
+<div class="mt-auto border-t border-white/10 p-4">
+<div class="flex items-center gap-3 rounded-xl bg-white/5 p-3 hover:bg-white/10 cursor-pointer transition-colors">
+<div class="h-10 w-10 overflow-hidden rounded-full border-2 border-primary">
+<img alt="Admin Avatar" class="h-full w-full object-cover" data-alt="Portrait of admin user" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAy_eYah9DpbaPrRqHVBhzRD3N0TTpR2i_hY6DPcXbU8PP6KJXuivbq0r1erUem-2fdtWgEGrgwkWgo5Mv1yzuOd1DwWGbEgFHKeMtd-7MYlZTJRIAtHwvt7CRI7iwTYTeSNx0Yk9skSQarlMcaCr_l5CoVWUQTRVXB5WEkek6CcIspb_3jklkBsoV6W2JI7CCSYKlWJ7h5THuKCZXiCrHH-WFToLvvVgk3G9m78PVIyCPQPa63U9LO1zH0NjS2FL_MHx8Ey-xF-M3M"/>
+</div>
+<div class="flex flex-col overflow-hidden">
+<span class="truncate text-sm font-semibold text-white">Admin User</span>
+<span class="truncate text-xs text-stone-400">admin@rental.com</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex flex-1 flex-col overflow-y-auto bg-background-light">
+<!-- Header Mobile/Desktop -->
+<header class="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-stone-200 bg-white/80 px-6 backdrop-blur-md lg:hidden">
+<button class="text-stone-500 hover:text-stone-900">
+<span class="material-symbols-outlined">menu</span>
+</button>
+<span class="font-bold text-lg">Rekap Order</span>
+<button class="text-stone-500 hover:text-stone-900">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+</header>
+<div class="container mx-auto max-w-7xl p-6 lg:p-8">
+<!-- Page Title Section -->
+<div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+<div>
+<h1 class="font-display text-3xl font-bold text-slate-900">Rekap Order</h1>
+<p class="mt-1 text-slate-500">Manage and view all car rental bookings here.</p>
+</div>
+<div class="flex gap-3">
+<button class="flex items-center gap-2 rounded-lg bg-white border border-stone-200 px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-stone-50 transition-colors">
+<span class="material-symbols-outlined text-[20px]">download</span>
+                            Export
+                        </button>
+<button class="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-primary/25 hover:bg-primary-hover transition-colors">
+<span class="material-symbols-outlined text-[20px]">add</span>
+                            New Order
+                        </button>
+</div>
+</div>
+<!-- Filters -->
+<div class="mb-6 flex flex-wrap gap-3">
+<div class="relative group">
+<button class="flex items-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-inset ring-stone-200 hover:bg-stone-50">
+<span class="material-symbols-outlined text-[20px] text-primary">filter_list</span>
+                            All Status
+                            <span class="material-symbols-outlined text-[20px] text-slate-400 ml-1">expand_more</span>
+</button>
+</div>
+<div class="relative group">
+<button class="flex items-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-inset ring-stone-200 hover:bg-stone-50">
+<span class="material-symbols-outlined text-[20px] text-primary">calendar_month</span>
+                            Date Range
+                            <span class="material-symbols-outlined text-[20px] text-slate-400 ml-1">expand_more</span>
+</button>
+</div>
+<div class="relative ml-auto w-full sm:w-auto">
+<span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+<span class="material-symbols-outlined text-[20px]">search</span>
+</span>
+<input class="w-full rounded-lg border-0 py-2.5 pl-10 pr-4 text-slate-900 shadow-sm ring-1 ring-inset ring-stone-200 placeholder:text-slate-400 focus:ring-2 focus:ring-inset focus:ring-primary sm:w-64 sm:text-sm sm:leading-6" placeholder="Search customer or ID..." type="text"/>
+</div>
+</div>
+<!-- Table Container -->
+<div class="rounded-xl border border-stone-200 bg-white shadow-sm overflow-hidden">
+<div class="overflow-x-auto">
+<table class="w-full min-w-[1000px] text-left text-sm text-slate-600">
+<thead class="bg-stone-50 text-xs uppercase font-semibold text-slate-500">
+<tr>
+<th class="px-6 py-4" scope="col">#</th>
+<th class="px-6 py-4" scope="col">Customer Info</th>
+<th class="px-6 py-4" scope="col">Car Details</th>
+<th class="px-6 py-4" scope="col">Rental Dates</th>
+<th class="px-6 py-4" scope="col">Total Price</th>
+<th class="px-6 py-4" scope="col">Status</th>
+<th class="px-6 py-4 text-right" scope="col">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-stone-100">
+<!-- Row 1: Pending -->
+<tr class="group hover:bg-stone-50/50 transition-colors">
+<td class="px-6 py-4 font-medium text-slate-900">#ORD-001</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-semibold text-slate-900">Budi Santoso</span>
+<div class="mt-1 flex items-center gap-1 text-xs text-slate-500">
+<span class="material-symbols-outlined text-[14px]">phone</span>
+                                                +62 812-3456-789
+                                            </div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 shrink-0 rounded-lg bg-stone-100 p-1">
+<img alt="White Toyota Avanza side view" class="h-full w-full object-contain" data-alt="White mini MPV car" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCGdGzO0k2fgH1PR_-QiqGuC0-gXtHBDT3Gd9feHgB6G6gTmYAJzfbDu-04mNN_j__E3DKQzpXBaG9ICw905pgZpRz1SVbwt-ixtN6M7XyrPOgz74LZ0eibrkPSGivE6vKPfDbkUkO0mmc9ixgMrkgh2Hx1VHjYUw91iHehDSuOt6_M0VYCb520SwAa92FGlKh6vKDFQlMGZLMEl3U2rloG1VWl1zHROeGtU-9KWjFZ6Em9Du99qhgwneYWeo7AOEp6d-zXp8WQyvKK"/>
+</div>
+<div>
+<p class="font-medium text-slate-900">Toyota Avanza</p>
+<p class="text-xs text-slate-500">Veloz 2023</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-medium text-slate-900">12 Oct - 14 Oct</span>
+<span class="text-xs text-slate-500">3 Days</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-bold text-primary">Rp 900.000</span>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-yellow-50 px-2.5 py-0.5 text-xs font-medium text-yellow-700 ring-1 ring-inset ring-yellow-600/20">
+                                            Pending
+                                        </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex justify-end gap-2">
+<button class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300 transition-colors" title="Cancel">
+<span class="material-symbols-outlined text-[18px]">close</span>
+</button>
+<button class="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-green-600 px-3 text-xs font-medium text-white hover:bg-green-700 transition-colors shadow-sm shadow-green-200" title="Confirm">
+<span class="material-symbols-outlined text-[16px]">check</span>
+                                                Confirm
+                                            </button>
+</div>
+</td>
+</tr>
+<!-- Row 2: Confirmed -->
+<tr class="group hover:bg-stone-50/50 transition-colors">
+<td class="px-6 py-4 font-medium text-slate-900">#ORD-002</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-semibold text-slate-900">Siti Aminah</span>
+<div class="mt-1 flex items-center gap-1 text-xs text-slate-500">
+<span class="material-symbols-outlined text-[14px]">phone</span>
+                                                +62 819-8765-432
+                                            </div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 shrink-0 rounded-lg bg-stone-100 p-1">
+<img alt="Red compact hatchback car" class="h-full w-full object-contain" data-alt="Compact city car" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD9JevXh69XQ5vR0312q3nlgy0prBZnTrc38CI1cSdNQFQcD_on5X2vg-dMpBzcxiwGY2yb3q75-aPZtXAK2NgGOf89m_BPK2pG0ZLKQDcRUjAGC8rMOuAq7lRDfZ9I1aPk5Lwqi2JHiv0eiIvBtCpsIil-x8MdslHhdOTPjNgaLpKAAKw60tYTXxHNE9mXYrElVKbflDv8Rb54DlPZgpKRGjmJPT8RWrjsHUwYIy94Y4IzuQT19tnuVY8dsUFEvh9Z6HjyKfXe2mCx"/>
+</div>
+<div>
+<p class="font-medium text-slate-900">Honda Brio</p>
+<p class="text-xs text-slate-500">Satya 2022</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-medium text-slate-900">15 Oct - 16 Oct</span>
+<span class="text-xs text-slate-500">2 Days</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-bold text-primary">Rp 500.000</span>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-700/10">
+                                            Confirmed
+                                        </span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-stone-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-stone-50 transition-colors">
+<span class="material-symbols-outlined text-[16px]">visibility</span>
+                                            Details
+                                        </button>
+</td>
+</tr>
+<!-- Row 3: Cancelled -->
+<tr class="group hover:bg-stone-50/50 transition-colors">
+<td class="px-6 py-4 font-medium text-slate-900">#ORD-003</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-semibold text-slate-900">Joko Widodo</span>
+<div class="mt-1 flex items-center gap-1 text-xs text-slate-500">
+<span class="material-symbols-outlined text-[14px]">phone</span>
+                                                +62 811-2233-445
+                                            </div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 shrink-0 rounded-lg bg-stone-100 p-1">
+<img alt="Silver SUV crossover" class="h-full w-full object-contain" data-alt="Modern SUV vehicle" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCHFRKsmpxE0vusYBgqn3-zPXOGzZbwgYM98d3yVr3E9lKIhLYTFIGTer_rMzjuBEj5eQzC7xsw8POw_VM1yeCTNsNF7Xx_543F5zm5rkvNV5Y04e54egpOSRR1Gmxzaav-JalgO8EPPk1terspTSZjl8N04kbRYrQgBUcpMsO6V2sLVq0PfSv9tXOVgtyhZ4G1KSyf-D-Z48goBhAWPHgWwhohcPFX6fVVOUqqJd8DWfdxSr72r6EkJ3PvitfJhjp-URwieWouFzmD"/>
+</div>
+<div>
+<p class="font-medium text-slate-900">Mits. Xpander</p>
+<p class="text-xs text-slate-500">Cross 2023</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-medium text-slate-900">20 Oct - 23 Oct</span>
+<span class="text-xs text-slate-500">4 Days</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-bold text-slate-400 line-through">Rp 1.500.000</span>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/10">
+                                            Cancelled
+                                        </span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-stone-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-stone-50 transition-colors opacity-50 cursor-not-allowed">
+<span class="material-symbols-outlined text-[16px]">visibility</span>
+                                            Details
+                                        </button>
+</td>
+</tr>
+<!-- Row 4: Pending -->
+<tr class="group hover:bg-stone-50/50 transition-colors">
+<td class="px-6 py-4 font-medium text-slate-900">#ORD-004</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-semibold text-slate-900">Rina Marlina</span>
+<div class="mt-1 flex items-center gap-1 text-xs text-slate-500">
+<span class="material-symbols-outlined text-[14px]">phone</span>
+                                                +62 855-6677-889
+                                            </div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 shrink-0 rounded-lg bg-stone-100 p-1">
+<img alt="Black family MPV" class="h-full w-full object-contain" data-alt="Large family vehicle" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDIDZSyiITfpreqvsGYkrdtDwvH1Ja5EtXn2X6Wjk4owf57EoYnvUTKbakJU96rQbyNK9BEY0x34PaVaG5Uc6pjvKKkoO22lsyP7TQd4WkhzFO6Uys4eGyOSBxhiwPrnDG5QHocdhcgc7eAs3HMiGf11-pYDbztyvsFy5F7sUN3k3NkS1xTdhLdXZLPc0Gi3DDtEn2uFtwzqFyqZFCtlevCW2EBJifGRsqWZBgZoaWF0kkZnKNH1ru2zR0eJiE5po_1eYZ4eIRh94PQ"/>
+</div>
+<div>
+<p class="font-medium text-slate-900">Toyota Innova</p>
+<p class="text-xs text-slate-500">Reborn 2021</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-medium text-slate-900">25 Oct - 27 Oct</span>
+<span class="text-xs text-slate-500">3 Days</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-bold text-primary">Rp 1.200.000</span>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-yellow-50 px-2.5 py-0.5 text-xs font-medium text-yellow-700 ring-1 ring-inset ring-yellow-600/20">
+                                            Pending
+                                        </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex justify-end gap-2">
+<button class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300 transition-colors" title="Cancel">
+<span class="material-symbols-outlined text-[18px]">close</span>
+</button>
+<button class="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-green-600 px-3 text-xs font-medium text-white hover:bg-green-700 transition-colors shadow-sm shadow-green-200" title="Confirm">
+<span class="material-symbols-outlined text-[16px]">check</span>
+                                                Confirm
+                                            </button>
+</div>
+</td>
+</tr>
+<!-- Row 5: Completed -->
+<tr class="group hover:bg-stone-50/50 transition-colors">
+<td class="px-6 py-4 font-medium text-slate-900">#ORD-005</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-semibold text-slate-900">Andi Wijaya</span>
+<div class="mt-1 flex items-center gap-1 text-xs text-slate-500">
+<span class="material-symbols-outlined text-[14px]">phone</span>
+                                                +62 899-8877-665
+                                            </div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 shrink-0 rounded-lg bg-stone-100 p-1">
+<img alt="White compact SUV" class="h-full w-full object-contain" data-alt="Compact SUV" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDwXXSTMldsmNyGim8NaPBDB4M0OlKUFIZuLgMUvFQ-o-0eANV_HNkCtG_e90442nDHAovfhl9hgdD38jqr8oU54Gmg4IHXEprg-0-55kcqy2unKyS0aXxJ5ZoOoL_0d4N9w4_N3vLmw60w074W6HxKstv0bvDiyZ3-sCBirPAZjPF7yCujljwhcybFB2cuYvPlFGVBhGbMvd_Jj3CUc1vEmHxxPVMN3F1jMh49BKFAE1ALd0a9IGon1gIPtYGyVYsJST2nQoIyGJrO"/>
+</div>
+<div>
+<p class="font-medium text-slate-900">Daihatsu Terios</p>
+<p class="text-xs text-slate-500">X 2022</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<div class="flex flex-col">
+<span class="font-medium text-slate-900">28 Oct - 30 Oct</span>
+<span class="text-xs text-slate-500">3 Days</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-bold text-slate-900">Rp 1.000.000</span>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700 ring-1 ring-inset ring-green-600/20">
+                                            Completed
+                                        </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex justify-end gap-2">
+<button class="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-900 transition-colors">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+                                                Done
+                                            </button>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination -->
+<div class="flex items-center justify-between border-t border-stone-200 bg-white px-6 py-4">
+<div class="flex items-center text-sm text-slate-500">
+                            Showing <span class="font-medium text-slate-900 mx-1">1</span> to <span class="font-medium text-slate-900 mx-1">5</span> of <span class="font-medium text-slate-900 mx-1">24</span> results
+                        </div>
+<div class="flex gap-2">
+<button class="flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 text-slate-600 hover:bg-stone-50 disabled:opacity-50">
+<span class="material-symbols-outlined text-[18px]">chevron_left</span>
+</button>
+<button class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-white shadow-sm shadow-primary/30">
+                                1
+                            </button>
+<button class="flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 text-slate-600 hover:bg-stone-50">
+                                2
+                            </button>
+<button class="flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 text-slate-600 hover:bg-stone-50">
+                                3
+                            </button>
+<span class="flex h-9 w-9 items-center justify-center text-slate-400">...</span>
+<button class="flex h-9 w-9 items-center justify-center rounded-lg border border-stone-200 text-slate-600 hover:bg-stone-50">
+<span class="material-symbols-outlined text-[18px]">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

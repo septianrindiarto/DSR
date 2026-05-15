@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Jadwal Mobil | Crimson Velocity</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                "on-tertiary": "#ffffff",
+                "tertiary-fixed": "#e0f2fe",
+                "secondary-fixed": "#f5f5f5",
+                "surface-variant": "#f1f5f9",
+                "on-tertiary-container": "#075985",
+                "on-error": "#ffffff",
+                "on-primary-fixed": "#4c0519",
+                "surface-dim": "#f1f1f1",
+                "error": "#ef4444",
+                "primary-fixed": "#ffe4e6",
+                "outline-variant": "#cbd5e1",
+                "surface-bright": "#ffffff",
+                "secondary": "#1a1a1a",
+                "inverse-surface": "#1a1a1a",
+                "surface-container": "#f1f1f1",
+                "surface-container-high": "#f1f1f1",
+                "tertiary-container": "#e0f2fe",
+                "surface-container-lowest": "#ffffff",
+                "primary-container": "#fee2e2",
+                "surface": "#ffffff",
+                "on-primary-fixed-variant": "#be123c",
+                "on-surface-variant": "#64748b",
+                "surface-tint": "#ff0008",
+                "on-primary-container": "#991b1b",
+                "inverse-primary": "#ff8a8d",
+                "on-secondary-fixed": "#171717",
+                "on-tertiary-fixed-variant": "#075985",
+                "on-primary": "#ffffff",
+                "on-secondary-container": "#ffffff",
+                "on-secondary-fixed-variant": "#404040",
+                "tertiary-fixed-dim": "#bae6fd",
+                "primary": "#ff0008",
+                "on-background": "#0f172a",
+                "tertiary": "#0ea5e9",
+                "on-secondary": "#d4d4d4",
+                "surface-container-low": "#ffffff",
+                "on-tertiary-fixed": "#082f49",
+                "background": "#f8f5f5",
+                "secondary-container": "#2e2e2e",
+                "secondary-fixed-dim": "#e5e5e5",
+                "inverse-on-surface": "#f8f5f5",
+                "primary-fixed-dim": "#fecdd3",
+                "surface-container-highest": "#ccc",
+                "on-error-container": "#991b1b",
+                "outline": "#e2e8f0",
+                "on-surface": "#0f172a",
+                "error-container": "#fee2e2"
+            },
+            "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+            },
+            "fontFamily": {
+                "headline": ["Inter"],
+                "body": ["Inter"],
+                "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #ff0008; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-background text-on-surface min-h-screen">
+<!-- SideNavBar Component -->
+<aside class="bg-[#1a1a1a] h-screen w-64 fixed left-0 top-0 flex flex-col p-6 z-50 shadow-lg shadow-[#ff0008]/10">
+<div class="mb-10">
+<h1 class="text-xl font-black text-[#ff0008] uppercase tracking-wider">Crimson Velocity</h1>
+<p class="text-gray-500 text-xs font-bold tracking-widest mt-1">Admin Terminal</p>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined text-xl">dashboard</span>
+<span class="font-bold tracking-tight">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined text-xl">directions_car</span>
+<span class="font-bold tracking-tight">Armada</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined text-xl">receipt_long</span>
+<span class="font-bold tracking-tight">Order Recap</span>
+</a>
+<!-- Active State: Jadwal Mobil -->
+<a class="flex items-center gap-3 px-4 py-3 bg-[#ff0008] text-white rounded-lg shadow-lg shadow-[#ff0008]/20 transition-all duration-200 group" href="#">
+<span class="material-symbols-outlined text-xl" style="font-variation-settings: 'FILL' 1;">calendar_month</span>
+<span class="font-bold tracking-tight">Jadwal Mobil</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined text-xl">group</span>
+<span class="font-bold tracking-tight">Pelanggan</span>
+</a>
+</nav>
+<button class="mb-8 w-full bg-[#ff0008] text-white py-3 rounded-lg font-bold shadow-lg shadow-[#ff0008]/20 scale-95 active:scale-90 transition-transform">
+            Add New Unit
+        </button>
+<div class="border-t border-white/10 pt-6 space-y-2">
+<a class="flex items-center gap-3 px-4 py-2 text-gray-400 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">settings</span>
+<span class="text-sm font-semibold">Settings</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-gray-400 hover:text-white transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">logout</span>
+<span class="text-sm font-semibold">Logout</span>
+</a>
+</div>
+</aside>
+<!-- TopAppBar Component -->
+<header class="h-16 w-full sticky top-0 z-40 bg-[#ffffff]/90 backdrop-blur-md flex items-center justify-between px-8 ml-64 shadow-sm border-none">
+<div class="flex items-center gap-4">
+<h2 class="font-['Inter'] text-lg font-black tracking-tight text-secondary">Jadwal Mobil</h2>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative group">
+<input class="bg-surface-container border-none rounded-lg py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-[#ff0008] w-64 transition-all" placeholder="Search fleet schedule..." type="text"/>
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">search</span>
+</div>
+<div class="flex items-center gap-4">
+<button class="relative text-gray-500 hover:text-[#ff0008] transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute -top-1 -right-1 w-2 h-2 bg-primary rounded-full"></span>
+</button>
+<button class="text-gray-500 hover:text-[#ff0008] transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<div class="h-8 w-[1px] bg-outline-variant mx-2"></div>
+<div class="flex items-center gap-3 cursor-pointer">
+<div class="text-right">
+<p class="text-xs font-black text-secondary uppercase leading-none">Administrator</p>
+<p class="text-[10px] text-gray-500 font-bold uppercase">Superuser</p>
+</div>
+<img alt="Administrator" class="w-10 h-10 rounded-full border-2 border-primary/20 object-cover" data-alt="professional male administrator headshot in suit, studio lighting, confident expression" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBQnfZrGE3-fPNHswy5V849zB3vgnjHVI_FWjLofAUWX8vVIh40SwePYyfaMJDn_kJqRxlknixPL75-eL-tv0pG-jVMoQi0M9OYAqy7A4i4KmAtyqx9sh1jlGnda7rzT0oRbRFeKFrdeZQu6PgQbK6d5B1HYmH-pK-sQy8Ctq2fwxzoYD8KjXi65JBOg9bVR4kmNBIaiKHGYLcHNBTK8CTTIVe9FOuEZffZ84ESX7XokIEE-uF85UmFI0tNbYvobfHIArC_oIfuWT6E"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Workspace -->
+<main class="ml-64 p-8">
+<!-- Control Header & Filters -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+<div>
+<h1 class="text-3xl font-black text-secondary tracking-tight">Fleet Timeline</h1>
+<p class="text-on-surface-variant font-medium mt-1">Real-time scheduling and availability monitor</p>
+</div>
+<div class="flex flex-wrap items-center gap-3">
+<div class="bg-surface p-1 rounded-lg shadow-sm border border-outline/50 flex items-center">
+<button class="px-4 py-2 text-xs font-black uppercase bg-secondary text-white rounded-md shadow-md">Weekly</button>
+<button class="px-4 py-2 text-xs font-black uppercase text-on-surface-variant hover:bg-surface-container transition-colors rounded-md">Monthly</button>
+</div>
+<div class="relative">
+<select class="appearance-none bg-surface border border-outline/50 rounded-lg py-2 pl-4 pr-10 text-xs font-bold uppercase tracking-wider focus:ring-2 focus:ring-[#ff0008] outline-none">
+<option>All Vehicle Types</option>
+<option>Luxury Sedan</option>
+<option>SUV / Off-road</option>
+<option>Performance / Sports</option>
+</select>
+<span class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none text-sm">filter_list</span>
+</div>
+<div class="flex items-center bg-surface border border-outline/50 rounded-lg px-4 py-2 gap-3 shadow-sm">
+<span class="material-symbols-outlined text-primary text-sm">calendar_today</span>
+<span class="text-xs font-black uppercase">Oct 24 - Oct 30, 2023</span>
+</div>
+</div>
+</div>
+<!-- Bento Grid Stats -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-primary">
+<p class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Active Bookings</p>
+<div class="flex items-end justify-between mt-2">
+<h3 class="text-3xl font-black text-secondary">42</h3>
+<span class="text-green-600 text-xs font-bold flex items-center gap-1">
+<span class="material-symbols-outlined text-sm">trending_up</span> +12%
+                    </span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-secondary">
+<p class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Available Fleet</p>
+<div class="flex items-end justify-between mt-2">
+<h3 class="text-3xl font-black text-secondary">18</h3>
+<span class="bg-tertiary-container text-on-tertiary-container text-[10px] font-black px-2 py-0.5 rounded-full">OPTIMAL</span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-primary">
+<p class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Maintenance</p>
+<div class="flex items-end justify-between mt-2">
+<h3 class="text-3xl font-black text-secondary">04</h3>
+<span class="text-primary text-xs font-bold flex items-center gap-1">
+<span class="material-symbols-outlined text-sm">build</span> URGENT
+                    </span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-outline">
+<p class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Fleet Capacity</p>
+<div class="mt-4 w-full bg-surface-container h-2 rounded-full overflow-hidden">
+<div class="bg-primary h-full" style="width: 78%"></div>
+</div>
+<p class="text-right text-[10px] font-bold text-on-surface-variant mt-1">78.5% LOAD</p>
+</div>
+</div>
+<!-- Timeline / Calendar View -->
+<div class="bg-surface rounded-2xl shadow-lg border border-outline/30 overflow-hidden">
+<div class="bg-surface-container p-6 flex items-center justify-between border-b border-outline/30">
+<div class="flex items-center gap-4">
+<h3 class="font-black text-secondary uppercase tracking-tight">Fleet Timeline Schedule</h3>
+<div class="flex gap-2">
+<span class="flex items-center gap-1.5 text-[10px] font-bold text-on-surface-variant bg-white px-2 py-1 rounded-md border border-outline">
+<span class="w-2 h-2 rounded-full bg-primary"></span> Booked
+                        </span>
+<span class="flex items-center gap-1.5 text-[10px] font-bold text-on-surface-variant bg-white px-2 py-1 rounded-md border border-outline">
+<span class="w-2 h-2 rounded-full bg-secondary"></span> Maintenance
+                        </span>
+</div>
+</div>
+<div class="flex gap-2">
+<button class="p-2 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-outline">
+<span class="material-symbols-outlined">chevron_left</span>
+</button>
+<button class="p-2 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-outline">
+<span class="material-symbols-outlined">chevron_right</span>
+</button>
+</div>
+</div>
+<div class="overflow-x-auto custom-scrollbar">
+<table class="w-full border-collapse">
+<thead>
+<tr>
+<th class="sticky left-0 bg-surface-container z-20 p-4 border-r border-outline/30 text-left min-w-[240px]">
+<span class="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">Vehicle Details</span>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Mon</p>
+<p class="text-xl font-black text-secondary">24</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px] bg-primary-container/20">
+<p class="text-[10px] font-black uppercase text-primary">Tue</p>
+<p class="text-xl font-black text-primary">25</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Wed</p>
+<p class="text-xl font-black text-secondary">26</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Thu</p>
+<p class="text-xl font-black text-secondary">27</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Fri</p>
+<p class="text-xl font-black text-secondary">28</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Sat</p>
+<p class="text-xl font-black text-secondary">29</p>
+</th>
+<th class="p-4 border-r border-outline/10 min-w-[120px]">
+<p class="text-[10px] font-black uppercase text-on-surface-variant opacity-50">Sun</p>
+<p class="text-xl font-black text-secondary">30</p>
+</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline/10">
+<!-- Vehicle Row 1 -->
+<tr class="hover:bg-surface-dim/30 transition-colors group">
+<td class="sticky left-0 bg-surface z-10 p-4 border-r border-outline/30 group-hover:bg-surface-dim/30">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 bg-surface-container rounded-lg overflow-hidden flex-shrink-0">
+<img class="w-full h-full object-cover" data-alt="side view of a sleek black BMW 5 series sedan, studio lighting, dramatic shadows" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBLDuwKt_sVSvm9lnBYKyvfQ8fjPcIZIZn2FwvSJYuOeTC3jla0Tb1a96pCcgJ_Z_M20K3vCzB4cia_5w3Qtil01mJAgWdh2IwVfOEI2BX5Imzr66kLIkgdGtI5CMa3UJBtfXDPfzovsypWZaD_LObNr4_0fqPfKLMFCDDuFMSaDiXa08sJRM_Rlva1pVqjoWg5PGpDo35ysfNHx4AmGvZYITBHL09-8r8ShnjqL08yBWZ8C5ewGw5NFG2rlvXIFdLKdNQLscsaNNj5"/>
+</div>
+<div>
+<p class="text-sm font-black text-secondary leading-tight uppercase">BMW 5 Series</p>
+<p class="text-[10px] font-bold text-on-surface-variant tracking-wider">B 1234 XYZ • SILVER</p>
+</div>
+</div>
+</td>
+<td class="p-2 relative border-r border-outline/10" colspan="3">
+<div class="bg-primary text-white p-2 rounded-lg shadow-md shadow-primary/20 flex items-center justify-between">
+<div class="overflow-hidden">
+<p class="text-[10px] font-black uppercase leading-none truncate">John Doe</p>
+<p class="text-[8px] font-medium opacity-80 mt-0.5">Corporate Airport Transfer</p>
+</div>
+<span class="material-symbols-outlined text-sm">more_vert</span>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 relative border-r border-outline/10" colspan="2">
+<div class="bg-primary/10 border-2 border-primary border-dashed text-primary p-2 rounded-lg flex items-center justify-between">
+<p class="text-[10px] font-black uppercase leading-none">A. Smith</p>
+<span class="material-symbols-outlined text-sm">schedule</span>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+</tr>
+<!-- Vehicle Row 2 -->
+<tr class="hover:bg-surface-dim/30 transition-colors group">
+<td class="sticky left-0 bg-surface z-10 p-4 border-r border-outline/30 group-hover:bg-surface-dim/30">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 bg-surface-container rounded-lg overflow-hidden flex-shrink-0">
+<img class="w-full h-full object-cover" data-alt="red luxury off-road jeep wrangler on a white background, studio quality photography" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAixJlWM7BHs4XRyqd4j_qxfaw6DHww_7ZQZaW866rzF7-BsM4UTrOsqxHkgJvrAZIaDFS1f8c_vvkWem3rwdmo_aEocyMdA1fGYyUnokkXZ_Twfx20_wnHLkdRbG6tdwuVMpclsPiEQH3maa04vLk8N6kXW8cuaWNq1v-9i76bc0tplcr9u6TpTBfmzdmrS8Q5RCy500V6KHN8HSC1FEylF4-GjnbkoHT93swV2LCqHvf87G9OAAdEwGRHUsHk8f7a3wPEQCfwT4l1"/>
+</div>
+<div>
+<p class="text-sm font-black text-secondary leading-tight uppercase">Jeep Wrangler</p>
+<p class="text-[10px] font-bold text-on-surface-variant tracking-wider">B 8888 VEL • RED</p>
+</div>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 relative border-r border-outline/10" colspan="5">
+<div class="bg-secondary text-white p-2 rounded-lg shadow-md flex items-center gap-3">
+<span class="material-symbols-outlined text-sm">build</span>
+<div>
+<p class="text-[10px] font-black uppercase leading-none">Routine Maintenance</p>
+<p class="text-[8px] font-medium opacity-80 mt-0.5">Engine Tune-up &amp; Tire Rotation</p>
+</div>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+</tr>
+<!-- Vehicle Row 3 -->
+<tr class="hover:bg-surface-dim/30 transition-colors group">
+<td class="sticky left-0 bg-surface z-10 p-4 border-r border-outline/30 group-hover:bg-surface-dim/30">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 bg-surface-container rounded-lg overflow-hidden flex-shrink-0">
+<img class="w-full h-full object-cover" data-alt="front view of a white porsche 911 at sunset, glowing headlights, minimalist high-end car photography" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCvzEiv5LgPAZTD_RCq-Eyt_7D-T1frtMOs2lNXrVmxGaDHoVTl9_G8gJeXtk_-duaSC9bIvgjzinknh-eetRxGgY1QTKknbnZmfTT7ZZue2QE1DnOcKQzXoKtTGpK9ZB44GKBuzzmhX0CxsLTq5aJiOSPR2gM1E5KBQ5Yk_5fL0LMtP98opUWZjO45zBWVBu7w9mKwwh2srUKeYDXLrxPhIrCdwaeefuxMdenFVv5u1jQ9VS_UZkjSPkXoJsHizb4bqeF6_ZajZH0A"/>
+</div>
+<div>
+<p class="text-sm font-black text-secondary leading-tight uppercase">Porsche 911</p>
+<p class="text-[10px] font-bold text-on-surface-variant tracking-wider">B 911 SPD • WHITE</p>
+</div>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 relative border-r border-outline/10" colspan="4">
+<div class="bg-primary text-white p-2 rounded-lg shadow-md shadow-primary/20 flex items-center justify-between">
+<div class="overflow-hidden">
+<p class="text-[10px] font-black uppercase leading-none truncate">Sarah Wilson</p>
+<p class="text-[8px] font-medium opacity-80 mt-0.5">Premium Weekend Rental</p>
+</div>
+<span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+</td>
+</tr>
+<!-- Vehicle Row 4 -->
+<tr class="hover:bg-surface-dim/30 transition-colors group">
+<td class="sticky left-0 bg-surface z-10 p-4 border-r border-outline/30 group-hover:bg-surface-dim/30">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 bg-surface-container rounded-lg overflow-hidden flex-shrink-0">
+<img class="w-full h-full object-cover" data-alt="interior dashboard of a luxury car with glowing red ambient light, focus on steering wheel and speedometer" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA2_l55Cg5yXBkL9YqyMZ07XKVeqlTU7UHRlYg11GeZ9f3hEcCAfVkzFZUn5TSC5VMeTvFdYyoifH_GRLnYhBSLTDSqT916BpdMilTs4GnUa3uc8KH11u8zZb4Av6Ac8niAYNDp3OUpiviaVep5nhuNMWwc3oQmD_bSwmnKsrdRaCgdgZv-2FxgqbU8PtECI30OxidTuPoXWw62PK0L0mZBvTZe-J7AqgY-RCZ6ZOnGtb7Yzlzr4t16QpNRzLqr-K6Qco0KiXTel1BN"/>
+</div>
+<div>
+<p class="text-sm font-black text-secondary leading-tight uppercase">Tesla Model S</p>
+<p class="text-[10px] font-bold text-on-surface-variant tracking-wider">B 2024 ELV • GREY</p>
+</div>
+</div>
+</td>
+<td class="p-2 relative border-r border-outline/10" colspan="2">
+<div class="bg-primary text-white p-2 rounded-lg shadow-md shadow-primary/20 flex items-center justify-between">
+<div class="overflow-hidden">
+<p class="text-[10px] font-black uppercase leading-none truncate">Mike Ross</p>
+<p class="text-[8px] font-medium opacity-80 mt-0.5">EV Experience Promo</p>
+</div>
+</div>
+</td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+<td class="p-2 border-r border-outline/10"></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="p-4 bg-surface-container-low flex items-center justify-between border-t border-outline/30">
+<p class="text-xs font-bold text-on-surface-variant">Showing 1-15 of 124 vehicles</p>
+<div class="flex gap-2">
+<button class="px-4 py-1.5 text-xs font-black uppercase bg-white border border-outline rounded-lg hover:bg-surface-container transition-colors">Previous</button>
+<button class="px-4 py-1.5 text-xs font-black uppercase bg-white border border-outline rounded-lg hover:bg-surface-container transition-colors">Next</button>
+</div>
+</div>
+</div>
+</main>
+<!-- Floating Action Button for Adding Schedule -->
+<button class="fixed bottom-8 right-8 w-14 h-14 bg-primary text-white rounded-full shadow-2xl shadow-primary/40 flex items-center justify-center hover:scale-110 active:scale-95 transition-all z-50">
+<span class="material-symbols-outlined text-3xl">add</span>
+</button>
+</body></html>

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Customer Database | Crimson Velocity</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                "on-tertiary": "#ffffff",
+                "tertiary-fixed": "#e0f2fe",
+                "secondary-fixed": "#f5f5f5",
+                "surface-variant": "#f1f5f9",
+                "on-tertiary-container": "#075985",
+                "on-error": "#ffffff",
+                "on-primary-fixed": "#4c0519",
+                "surface-dim": "#f1f1f1",
+                "error": "#ef4444",
+                "primary-fixed": "#ffe4e6",
+                "outline-variant": "#cbd5e1",
+                "surface-bright": "#ffffff",
+                "secondary": "#1a1a1a",
+                "inverse-surface": "#1a1a1a",
+                "surface-container": "#f1f1f1",
+                "surface-container-high": "#f1f1f1",
+                "tertiary-container": "#e0f2fe",
+                "surface-container-lowest": "#ffffff",
+                "primary-container": "#fee2e2",
+                "surface": "#ffffff",
+                "on-primary-fixed-variant": "#be123c",
+                "on-surface-variant": "#64748b",
+                "surface-tint": "#ff0008",
+                "on-primary-container": "#991b1b",
+                "inverse-primary": "#ff8a8d",
+                "on-secondary-fixed": "#171717",
+                "on-tertiary-fixed-variant": "#075985",
+                "on-primary": "#ffffff",
+                "on-secondary-container": "#ffffff",
+                "on-secondary-fixed-variant": "#404040",
+                "tertiary-fixed-dim": "#bae6fd",
+                "primary": "#ff0008",
+                "on-background": "#0f172a",
+                "tertiary": "#0ea5e9",
+                "on-secondary": "#d4d4d4",
+                "surface-container-low": "#ffffff",
+                "on-tertiary-fixed": "#082f49",
+                "background": "#f8f5f5",
+                "secondary-container": "#2e2e2e",
+                "secondary-fixed-dim": "#e5e5e5",
+                "inverse-on-surface": "#f8f5f5",
+                "primary-fixed-dim": "#fecdd3",
+                "surface-container-highest": "#ccc",
+                "on-error-container": "#991b1b",
+                "outline": "#e2e8f0",
+                "on-surface": "#0f172a",
+                "error-container": "#fee2e2"
+            },
+            "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+            },
+            "fontFamily": {
+                "headline": ["Inter"],
+                "body": ["Inter"],
+                "label": ["Inter"]
+            }
+          }
+        }
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface">
+<!-- SideNavBar -->
+<aside class="bg-[#1a1a1a] h-screen w-64 fixed left-0 top-0 flex flex-col h-full p-6 z-50 shadow-lg shadow-[#ff0008]/10">
+<div class="mb-10">
+<h1 class="text-xl font-black text-[#ff0008] uppercase tracking-wider">Crimson Velocity</h1>
+<p class="text-[10px] text-gray-500 font-bold tracking-widest uppercase">Admin Terminal</p>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">dashboard</span>
+<span class="font-['Inter'] font-bold tracking-tight">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">directions_car</span>
+<span class="font-['Inter'] font-bold tracking-tight">Armada</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">receipt_long</span>
+<span class="font-['Inter'] font-bold tracking-tight">Order Recap</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">calendar_month</span>
+<span class="font-['Inter'] font-bold tracking-tight">Jadwal Mobil</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 bg-[#ff0008] text-white rounded-lg shadow-lg shadow-[#ff0008]/20 group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">group</span>
+<span class="font-['Inter'] font-bold tracking-tight">Pelanggan</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-white/10 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">settings</span>
+<span class="font-['Inter'] font-bold tracking-tight text-sm">Settings</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 rounded-lg group" href="#">
+<span class="material-symbols-outlined group-active:scale-90 transition-transform">logout</span>
+<span class="font-['Inter'] font-bold tracking-tight text-sm">Logout</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 min-h-screen">
+<!-- TopAppBar -->
+<header class="h-16 w-full sticky top-0 z-40 bg-[#ffffff]/90 backdrop-blur-md shadow-sm flex items-center justify-between px-8">
+<div class="flex items-center gap-4">
+<h2 class="font-['Inter'] text-lg font-extrabold text-secondary tracking-tight">Customer Database</h2>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative focus-within:ring-2 focus-within:ring-[#ff0008] rounded-lg transition-all">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">search</span>
+<input class="bg-surface-container border-none rounded-lg pl-10 pr-4 py-2 text-sm w-64 focus:ring-0" placeholder="Search customers..." type="text"/>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-gray-500 hover:text-[#ff0008] transition-colors"><span class="material-symbols-outlined">notifications</span></button>
+<button class="text-gray-500 hover:text-[#ff0008] transition-colors"><span class="material-symbols-outlined">help</span></button>
+<div class="h-8 w-8 rounded-full bg-surface-container overflow-hidden border-2 border-[#ff0008]/20">
+<img alt="Administrator" class="w-full h-full object-cover" data-alt="close-up portrait of a professional male administrator in a clean modern office setting with neutral lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB0odbbO0xgqwLvWqQGGQ2YDgnBpT1AKlM6C7Uep31Ce20HFIral0IfKErBm5grUnb2XZAYtk7UKIwk2NMLSDEMDSdv5_CWhcfoTDts-V-3Q4J2TuiNHtRkehW72HtyJ4NcNLxR6zDsQGzFGPLuYgI8w1cWSrS--BTVanXHeKSRmV3qBEtGruDxfzrOhKvemcSYMocEqgH2nKMxjU_5dsdB640jUavh7cIfcA-C4KKU24mndw7IBT4gi2q7kUQDOBYcbSxwToEbQbYl"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Page Content -->
+<div class="p-8">
+<!-- Summary Bento Grid -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-[#ff0008] flex flex-col gap-1">
+<span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Total Pelanggan</span>
+<div class="flex items-baseline gap-2">
+<span class="text-3xl font-black text-secondary">1,284</span>
+<span class="text-xs font-bold text-green-600">+12%</span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-[#ff0008] flex flex-col gap-1">
+<span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Pelanggan Aktif</span>
+<div class="flex items-baseline gap-2">
+<span class="text-3xl font-black text-secondary">892</span>
+<span class="text-xs font-bold text-green-600">+5.4%</span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-[#ff0008] flex flex-col gap-1">
+<span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Repeat Orders</span>
+<div class="flex items-baseline gap-2">
+<span class="text-3xl font-black text-secondary">42%</span>
+<span class="text-xs font-bold text-gray-400">stable</span>
+</div>
+</div>
+<div class="bg-surface p-6 rounded-xl shadow-sm border-t-4 border-[#ff0008] flex flex-col gap-1">
+<span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Growth Rate</span>
+<div class="flex items-baseline gap-2">
+<span class="text-3xl font-black text-secondary">18.2%</span>
+<span class="text-xs font-bold text-[#ff0008]">+2.1%</span>
+</div>
+</div>
+</div>
+<!-- Table Section -->
+<div class="bg-surface rounded-xl shadow-sm overflow-hidden border-t-4 border-[#ff0008]">
+<!-- Table Controls -->
+<div class="p-6 flex flex-wrap items-center justify-between gap-4 border-b border-surface-container">
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 px-4 py-2 bg-surface-container hover:bg-surface-container-highest transition-colors rounded-lg text-sm font-bold text-secondary">
+<span class="material-symbols-outlined text-sm">filter_list</span>
+                            Filter By
+                        </button>
+<button class="flex items-center gap-2 px-4 py-2 bg-surface-container hover:bg-surface-container-highest transition-colors rounded-lg text-sm font-bold text-secondary">
+<span class="material-symbols-outlined text-sm">sort</span>
+                            Sort
+                        </button>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 px-6 py-2 bg-[#ff0008] text-white rounded-lg text-sm font-bold shadow-lg shadow-[#ff0008]/20 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-sm">add_circle</span>
+                            Add New Pelanggan
+                        </button>
+<button class="p-2 text-gray-400 hover:text-secondary transition-colors">
+<span class="material-symbols-outlined">download</span>
+</button>
+</div>
+</div>
+<!-- Main Table -->
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container">
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest">Customer Name</th>
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest">Contact (WhatsApp)</th>
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest text-center">Total Orders</th>
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest">Last Order Date</th>
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest">Status</th>
+<th class="px-6 py-4 text-[11px] font-black text-gray-500 uppercase tracking-widest text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-container/30 transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 rounded-full bg-[#ff0008]/10 flex items-center justify-center text-[#ff0008] font-bold text-sm">
+                                            AD
+                                        </div>
+<div>
+<p class="font-bold text-secondary text-sm">Andi Dermawan</p>
+<p class="text-xs text-gray-500">andi.d@velocity.id</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<a class="text-sm font-semibold text-tertiary flex items-center gap-1 hover:underline" href="#">
+<span class="material-symbols-outlined text-base">chat</span>
+                                        +62 812-3456-7890
+                                    </a>
+</td>
+<td class="px-6 py-4 text-center">
+<span class="text-sm font-black text-secondary">24</span>
+</td>
+<td class="px-6 py-4">
+<p class="text-sm font-semibold text-secondary">Oct 24, 2023</p>
+<p class="text-[10px] text-gray-400">14:30 WIB</p>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 bg-green-100 text-green-800 text-[10px] font-black uppercase tracking-widest rounded-full">VIP Member</span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="px-4 py-1.5 bg-surface-container group-hover:bg-[#ff0008] group-hover:text-white transition-all rounded-lg text-[11px] font-black uppercase tracking-wider">
+                                        View Details
+                                    </button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-container/30 transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 rounded-full bg-secondary-container flex items-center justify-center text-white font-bold text-sm">
+                                            SB
+                                        </div>
+<div>
+<p class="font-bold text-secondary text-sm">Siti Badriah</p>
+<p class="text-xs text-gray-500">siti.b@gmail.com</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<a class="text-sm font-semibold text-tertiary flex items-center gap-1 hover:underline" href="#">
+<span class="material-symbols-outlined text-base">chat</span>
+                                        +62 813-9876-5432
+                                    </a>
+</td>
+<td class="px-6 py-4 text-center">
+<span class="text-sm font-black text-secondary">12</span>
+</td>
+<td class="px-6 py-4">
+<p class="text-sm font-semibold text-secondary">Oct 22, 2023</p>
+<p class="text-[10px] text-gray-400">09:15 WIB</p>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 bg-blue-100 text-blue-800 text-[10px] font-black uppercase tracking-widest rounded-full">Regular</span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="px-4 py-1.5 bg-surface-container group-hover:bg-[#ff0008] group-hover:text-white transition-all rounded-lg text-[11px] font-black uppercase tracking-wider">
+                                        View Details
+                                    </button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-surface-container/30 transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 rounded-full bg-[#ff0008]/10 flex items-center justify-center text-[#ff0008] font-bold text-sm">
+                                            RK
+                                        </div>
+<div>
+<p class="font-bold text-secondary text-sm">Raka Kusuma</p>
+<p class="text-xs text-gray-500">raka.k@outlook.com</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<a class="text-sm font-semibold text-tertiary flex items-center gap-1 hover:underline" href="#">
+<span class="material-symbols-outlined text-base">chat</span>
+                                        +62 878-2233-4455
+                                    </a>
+</td>
+<td class="px-6 py-4 text-center">
+<span class="text-sm font-black text-secondary">5</span>
+</td>
+<td class="px-6 py-4">
+<p class="text-sm font-semibold text-secondary">Oct 21, 2023</p>
+<p class="text-[10px] text-gray-400">18:45 WIB</p>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 bg-yellow-100 text-yellow-800 text-[10px] font-black uppercase tracking-widest rounded-full">Pending Followup</span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="px-4 py-1.5 bg-surface-container group-hover:bg-[#ff0008] group-hover:text-white transition-all rounded-lg text-[11px] font-black uppercase tracking-wider">
+                                        View Details
+                                    </button>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-surface-container/30 transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="h-10 w-10 rounded-full bg-secondary-container flex items-center justify-center text-white font-bold text-sm">
+                                            ML
+                                        </div>
+<div>
+<p class="font-bold text-secondary text-sm">Maya Lestari</p>
+<p class="text-xs text-gray-500">maya.lestari@corp.id</p>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<a class="text-sm font-semibold text-tertiary flex items-center gap-1 hover:underline" href="#">
+<span class="material-symbols-outlined text-base">chat</span>
+                                        +62 856-4433-2211
+                                    </a>
+</td>
+<td class="px-6 py-4 text-center">
+<span class="text-sm font-black text-secondary">41</span>
+</td>
+<td class="px-6 py-4">
+<p class="text-sm font-semibold text-secondary">Oct 20, 2023</p>
+<p class="text-[10px] text-gray-400">11:20 WIB</p>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 bg-green-100 text-green-800 text-[10px] font-black uppercase tracking-widest rounded-full">VIP Member</span>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="px-4 py-1.5 bg-surface-container group-hover:bg-[#ff0008] group-hover:text-white transition-all rounded-lg text-[11px] font-black uppercase tracking-wider">
+                                        View Details
+                                    </button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination -->
+<div class="p-6 bg-surface-container/30 flex items-center justify-between border-t border-surface-container">
+<span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Showing 1 to 4 of 1,284 results</span>
+<div class="flex items-center gap-2">
+<button class="p-2 bg-surface rounded-lg shadow-sm border border-outline-variant hover:border-[#ff0008] transition-colors"><span class="material-symbols-outlined text-sm">chevron_left</span></button>
+<button class="w-8 h-8 flex items-center justify-center bg-[#ff0008] text-white rounded-lg text-xs font-black">1</button>
+<button class="w-8 h-8 flex items-center justify-center hover:bg-surface-container transition-colors rounded-lg text-xs font-black">2</button>
+<button class="w-8 h-8 flex items-center justify-center hover:bg-surface-container transition-colors rounded-lg text-xs font-black">3</button>
+<span class="px-1">...</span>
+<button class="w-8 h-8 flex items-center justify-center hover:bg-surface-container transition-colors rounded-lg text-xs font-black">128</button>
+<button class="p-2 bg-surface rounded-lg shadow-sm border border-outline-variant hover:border-[#ff0008] transition-colors"><span class="material-symbols-outlined text-sm">chevron_right</span></button>
+</div>
+</div>
+</div>
+<!-- Customer Analysis Section (Advanced UI) -->
+<div class="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+<!-- Loyalty Breakdown -->
+<div class="lg:col-span-2 bg-surface p-8 rounded-xl shadow-sm border-t-4 border-secondary flex flex-col gap-6">
+<div class="flex items-center justify-between">
+<h3 class="text-xl font-black text-secondary tracking-tight">Customer Retention Trends</h3>
+<span class="material-symbols-outlined text-gray-400">trending_up</span>
+</div>
+<div class="h-48 w-full bg-surface-container rounded-lg relative overflow-hidden flex items-end px-4 gap-4 pb-4">
+<!-- Simplified Visual Representation of a Graph -->
+<div class="flex-1 bg-[#ff0008]/20 h-[30%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[45%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[60%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[55%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[80%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[70%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+<div class="flex-1 bg-[#ff0008]/20 h-[95%] rounded-t-sm relative group">
+<div class="absolute inset-x-0 bottom-0 bg-[#ff0008] h-[100%] transition-all group-hover:h-[110%]"></div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="p-4 bg-surface-container rounded-lg">
+<p class="text-[10px] font-black text-gray-500 uppercase tracking-widest">Average CLV</p>
+<p class="text-xl font-black text-secondary">Rp 4.2M</p>
+</div>
+<div class="p-4 bg-surface-container rounded-lg">
+<p class="text-[10px] font-black text-gray-500 uppercase tracking-widest">Churn Rate</p>
+<p class="text-xl font-black text-[#ff0008]">2.4%</p>
+</div>
+</div>
+</div>
+<!-- Recent Feedback -->
+<div class="bg-[#1a1a1a] p-8 rounded-xl shadow-lg shadow-[#ff0008]/10 text-white flex flex-col gap-6">
+<h3 class="text-xl font-black tracking-tight border-b border-white/10 pb-4">Recent Feedback</h3>
+<div class="space-y-4">
+<div class="p-4 bg-white/5 rounded-lg border-l-4 border-[#ff0008]">
+<p class="text-sm font-bold">"Sangat cepat responsnya!"</p>
+<p class="text-[10px] text-gray-400 mt-2">Budi Santoso - Dashboard Order</p>
+</div>
+<div class="p-4 bg-white/5 rounded-lg border-l-4 border-[#ff0008]">
+<p class="text-sm font-bold">"Armada selalu bersih dan on-time."</p>
+<p class="text-[10px] text-gray-400 mt-2">Dewi Persik - Armada Jakarta</p>
+</div>
+<div class="p-4 bg-white/5 rounded-lg border-l-4 border-[#ff0008]">
+<p class="text-sm font-bold">"Harga kompetitif untuk luar kota."</p>
+<p class="text-[10px] text-gray-400 mt-2">Anton Wijaya - Long Trip</p>
+</div>
+</div>
+<button class="w-full py-3 bg-white/10 hover:bg-white/20 transition-colors rounded-lg text-xs font-black uppercase tracking-widest">
+                        View All Reviews
+                    </button>
+</div>
+</div>
+</div>
+</main>
+</body></html>

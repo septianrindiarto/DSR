@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+
+<html class="light" lang="id"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Laporan Keuangan | Crimson Velocity</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-primary-container": "#991b1b",
+                        "error-container": "#fee2e2",
+                        "secondary": "#1a1a1a",
+                        "on-surface-variant": "#64748b",
+                        "primary-fixed-dim": "#fecdd3",
+                        "surface-container-lowest": "#ffffff",
+                        "on-tertiary": "#ffffff",
+                        "tertiary-fixed": "#e0f2fe",
+                        "surface-bright": "#ffffff",
+                        "outline": "#e2e8f0",
+                        "secondary-fixed": "#f5f5f5",
+                        "on-primary-fixed": "#4c0519",
+                        "on-error": "#ffffff",
+                        "secondary-fixed-dim": "#e5e5e5",
+                        "on-surface": "#0f172a",
+                        "on-error-container": "#991b1b",
+                        "tertiary": "#0ea5e9",
+                        "on-tertiary-fixed": "#082f49",
+                        "surface-tint": "#ff0008",
+                        "on-secondary-fixed-variant": "#404040",
+                        "surface-container-high": "#f1f1f1",
+                        "inverse-surface": "#1a1a1a",
+                        "surface-container-highest": "#ccc",
+                        "on-tertiary-container": "#075985",
+                        "inverse-primary": "#ff8a8d",
+                        "surface-variant": "#f1f5f9",
+                        "tertiary-fixed-dim": "#bae6fd",
+                        "on-primary": "#ffffff",
+                        "error": "#ef4444",
+                        "surface": "#ffffff",
+                        "inverse-on-surface": "#f8f5f5",
+                        "on-secondary": "#d4d4d4",
+                        "tertiary-container": "#e0f2fe",
+                        "surface-container": "#f1f1f1",
+                        "on-background": "#0f172a",
+                        "on-primary-fixed-variant": "#be123c",
+                        "on-tertiary-fixed-variant": "#075985",
+                        "on-secondary-container": "#ffffff",
+                        "surface-dim": "#f1f1f1",
+                        "primary": "#ff0008",
+                        "on-secondary-fixed": "#171717",
+                        "secondary-container": "#2e2e2e",
+                        "primary-container": "#fee2e2",
+                        "outline-variant": "#cbd5e1",
+                        "primary-fixed": "#ffe4e6",
+                        "background": "#f8f5f5",
+                        "surface-container-low": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "display": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-background text-on-background min-h-screen">
+<!-- SideNavBar Shell -->
+<aside class="h-screen w-64 fixed left-0 top-0 bg-[#1a1a1a] dark:bg-black flex flex-col p-6 shadow-lg shadow-[#ff0008]/10 z-50">
+<div class="mb-10">
+<h1 class="text-xl font-black text-[#ff0008] uppercase tracking-wider">Crimson Velocity</h1>
+<p class="text-[10px] text-gray-500 font-bold tracking-widest uppercase mt-1">Admin Terminal</p>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 font-bold tracking-tight rounded-lg group" href="#">
+<span class="material-symbols-outlined text-lg">dashboard</span>
+<span>Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 font-bold tracking-tight rounded-lg group" href="#">
+<span class="material-symbols-outlined text-lg">directions_car</span>
+<span>Armada</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 font-bold tracking-tight rounded-lg group" href="#">
+<span class="material-symbols-outlined text-lg">receipt_long</span>
+<span>Order Recap</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 font-bold tracking-tight rounded-lg group" href="#">
+<span class="material-symbols-outlined text-lg">calendar_month</span>
+<span>Jadwal Mobil</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-white/5 transition-colors duration-200 font-bold tracking-tight rounded-lg group" href="#">
+<span class="material-symbols-outlined text-lg">group</span>
+<span>Pelanggan</span>
+</a>
+<!-- Active Tab: Laporan Keuangan -->
+<a class="flex items-center gap-3 px-4 py-3 bg-[#ff0008] text-white rounded-lg shadow-lg shadow-[#ff0008]/20 font-bold tracking-tight transition-transform scale-95 active:scale-90" href="#">
+<span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">payments</span>
+<span>Laporan Keuangan</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-white/10 space-y-2">
+<button class="w-full bg-white/5 hover:bg-white/10 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 mb-4 transition-all border border-white/5">
+<span class="material-symbols-outlined text-sm">add</span>
+<span>Add New Unit</span>
+</button>
+<a class="flex items-center gap-3 px-4 py-2 text-gray-400 hover:text-white transition-colors text-sm font-semibold" href="#">
+<span class="material-symbols-outlined text-lg">settings</span>
+<span>Settings</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-gray-400 hover:text-white transition-colors text-sm font-semibold" href="#">
+<span class="material-symbols-outlined text-lg">logout</span>
+<span>Logout</span>
+</a>
+</div>
+</aside>
+<!-- TopAppBar Shell -->
+<header class="h-16 w-full sticky top-0 z-40 bg-[#ffffff]/90 dark:bg-gray-900/90 backdrop-blur-md flex items-center justify-between px-8 ml-64 shadow-sm">
+<div class="flex items-center gap-4 flex-1 max-w-xl">
+<div class="relative w-full focus-within:ring-2 focus-within:ring-[#ff0008] rounded-lg">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-sm">search</span>
+<input class="w-full bg-surface-container border-none rounded-lg pl-10 pr-4 py-2 text-sm font-medium focus:ring-0" placeholder="Search reports, documents, or templates..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<button class="text-on-surface-variant hover:text-[#ff0008] transition-colors relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-0 right-0 w-2 h-2 bg-primary rounded-full border-2 border-white"></span>
+</button>
+<button class="text-on-surface-variant hover:text-[#ff0008] transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<div class="flex items-center gap-3 pl-6 border-l border-outline">
+<div class="text-right">
+<p class="text-sm font-bold leading-none">Administrator</p>
+<p class="text-[10px] text-on-surface-variant font-medium mt-1">Global Manager</p>
+</div>
+<div class="h-10 w-10 rounded-full overflow-hidden border-2 border-primary/20">
+<img alt="Administrator" class="w-full h-full object-cover" data-alt="A professional headshot of a middle-aged male administrator with a sharp, focused expression. He wears a crisp white shirt and dark blazer, set against a blurred high-tech office background with soft bokeh lighting. The aesthetic is clean and corporate, echoing the minimalist, high-contrast style of the Crimson Velocity brand." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCjxW6v79rWmrtOeIOXFgvsIxiwJzuchrPqomRoYexKEZvwzC-DMrXTjnblsACQFLspW-uAhFIDTObEtgEfnZb7A2th05AKeWZl_oCZf5DzvpFthpYquvfNO7bwPVv6HXR6FzF5g4fQcCe_078LGsurntJa636vCunW3Se9g1itplprmZTQ79uyluozHlkorz9Th1syGEVfSNPg6wbENH_0cCw2RdxhIHP6xbVkrU1stNkqH3gc8rS0n3wb8LErPosJDjWVGvNSNykF"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Workspace -->
+<main class="ml-64 p-8 min-h-[calc(100vh-4rem)]">
+<!-- Page Header Area -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
+<div>
+<nav class="flex items-center gap-2 text-xs font-bold text-on-surface-variant uppercase tracking-widest mb-2">
+<span>Finance</span>
+<span class="material-symbols-outlined text-[10px]">chevron_right</span>
+<span class="text-primary">Reports &amp; Documents</span>
+</nav>
+<h2 class="text-[30px] font-black tracking-tight text-on-surface leading-tight">Laporan &amp; Dokumen Keuangan</h2>
+<p class="text-on-surface-variant text-sm mt-1">Manage and audit institutional financial assets and documentation.</p>
+</div>
+<button class="bg-primary hover:bg-primary/90 text-white font-bold px-6 py-3 rounded-lg flex items-center gap-2 shadow-lg shadow-primary/20 transition-all scale-100 active:scale-95">
+<span class="material-symbols-outlined">upload_file</span>
+<span>Upload Dokumen Baru</span>
+</button>
+</div>
+<!-- Category Tabs -->
+<div class="flex items-center gap-2 overflow-x-auto hide-scrollbar mb-8 border-b border-outline pb-px">
+<button class="px-6 py-3 border-b-2 border-primary text-primary text-sm font-bold whitespace-nowrap transition-colors">Semua</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Keuangan Inti</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Perpajakan</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Aset &amp; Armada</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Kepatuhan</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Operasional</button>
+<button class="px-6 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface text-sm font-bold whitespace-nowrap transition-colors">Payroll</button>
+</div>
+<!-- Template Manager Section -->
+<section class="mb-12">
+<div class="flex items-center justify-between mb-4">
+<h3 class="text-lg font-black tracking-tight uppercase border-l-4 border-primary pl-3">Template Manager</h3>
+<button class="text-primary text-xs font-bold hover:underline">View All Templates</button>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+<!-- Template Card 1 -->
+<div class="bg-surface p-5 rounded-lg shadow-sm border-t-4 border-primary group hover:shadow-md transition-shadow">
+<div class="flex items-start justify-between mb-4">
+<div class="p-2 bg-surface-container rounded-lg group-hover:bg-primary/5 transition-colors">
+<span class="material-symbols-outlined text-primary">analytics</span>
+</div>
+<span class="text-[10px] font-bold text-on-surface-variant bg-surface-container px-2 py-1 rounded">XLSX / PDF</span>
+</div>
+<h4 class="font-bold text-on-surface mb-1">Template Income Statement</h4>
+<p class="text-xs text-on-surface-variant leading-relaxed mb-6">Standard standardized profit &amp; loss statement for quarterly auditing.</p>
+<div class="flex items-center gap-2">
+<button class="flex-1 bg-surface-container hover:bg-primary hover:text-white transition-colors py-2 text-xs font-bold rounded-lg border border-outline/50">View Template</button>
+<button class="px-3 py-2 bg-surface-container hover:bg-surface-container-highest transition-colors rounded-lg border border-outline/50">
+<span class="material-symbols-outlined text-sm">bookmark</span>
+</button>
+</div>
+</div>
+<!-- Template Card 2 -->
+<div class="bg-surface p-5 rounded-lg shadow-sm border-t-4 border-primary group hover:shadow-md transition-shadow">
+<div class="flex items-start justify-between mb-4">
+<div class="p-2 bg-surface-container rounded-lg group-hover:bg-primary/5 transition-colors">
+<span class="material-symbols-outlined text-primary">account_balance</span>
+</div>
+<span class="text-[10px] font-bold text-on-surface-variant bg-surface-container px-2 py-1 rounded">OFFICIAL</span>
+</div>
+<h4 class="font-bold text-on-surface mb-1">Format SPT Tahunan</h4>
+<p class="text-xs text-on-surface-variant leading-relaxed mb-6">Compliance-ready format for annual tax reporting for commercial entities.</p>
+<div class="flex items-center gap-2">
+<button class="flex-1 bg-surface-container hover:bg-primary hover:text-white transition-colors py-2 text-xs font-bold rounded-lg border border-outline/50">View Template</button>
+<button class="px-3 py-2 bg-surface-container hover:bg-surface-container-highest transition-colors rounded-lg border border-outline/50">
+<span class="material-symbols-outlined text-sm">bookmark</span>
+</button>
+</div>
+</div>
+<!-- Template Card 3 -->
+<div class="bg-surface p-5 rounded-lg shadow-sm border-t-4 border-primary group hover:shadow-md transition-shadow">
+<div class="flex items-start justify-between mb-4">
+<div class="p-2 bg-surface-container rounded-lg group-hover:bg-primary/5 transition-colors">
+<span class="material-symbols-outlined text-primary">rebase_edit</span>
+</div>
+<span class="text-[10px] font-bold text-on-surface-variant bg-surface-container px-2 py-1 rounded">XLSX</span>
+</div>
+<h4 class="font-bold text-on-surface mb-1">Depreciation Schedule</h4>
+<p class="text-xs text-on-surface-variant leading-relaxed mb-6">Automated calculator for vehicle asset depreciation over 5-10 years.</p>
+<div class="flex items-center gap-2">
+<button class="flex-1 bg-surface-container hover:bg-primary hover:text-white transition-colors py-2 text-xs font-bold rounded-lg border border-outline/50">View Template</button>
+<button class="px-3 py-2 bg-surface-container hover:bg-surface-container-highest transition-colors rounded-lg border border-outline/50">
+<span class="material-symbols-outlined text-sm">bookmark</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Document List Table Section -->
+<section class="bg-surface rounded-xl shadow-sm overflow-hidden border border-outline/50">
+<div class="p-6 border-b border-outline bg-surface-container-low flex flex-col md:flex-row md:items-center justify-between gap-4">
+<h3 class="font-black text-on-surface uppercase tracking-tight">Active Document Registry</h3>
+<div class="flex items-center gap-2">
+<button class="p-2 bg-white rounded border border-outline hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined text-sm">filter_list</span>
+</button>
+<button class="p-2 bg-white rounded border border-outline hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined text-sm">sort_by_alpha</span>
+</button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead>
+<tr class="bg-surface-container text-[11px] font-black uppercase text-on-surface-variant tracking-widest border-b border-outline">
+<th class="px-6 py-4">Nama Dokumen</th>
+<th class="px-6 py-4">Kategori</th>
+<th class="px-6 py-4">Periode</th>
+<th class="px-6 py-4">Tanggal Dibuat</th>
+<th class="px-6 py-4">Status</th>
+<th class="px-6 py-4 text-right">Aksi</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline">
+<!-- Row 1: Income Statement -->
+<tr class="hover:bg-surface-container/50 transition-colors">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">description</span>
+<span class="text-sm font-bold">Income Statement Q3 2023</span>
+</div>
+</td>
+<td class="px-6 py-4"><span class="text-xs font-medium bg-blue-100 text-blue-800 px-2 py-0.5 rounded">Keuangan Inti</span></td>
+<td class="px-6 py-4 text-xs font-medium">Jul - Sep 2023</td>
+<td class="px-6 py-4 text-xs font-medium">12 Okt 2023</td>
+<td class="px-6 py-4">
+<span class="flex items-center gap-1.5 text-[10px] font-black uppercase bg-green-100 text-green-700 px-2 py-1 rounded w-fit">
+<span class="w-1.5 h-1.5 rounded-full bg-green-600"></span> Final
+                                </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex items-center justify-end gap-3 text-on-surface-variant">
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">download</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">edit</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">share</span></button>
+</div>
+</td>
+</tr>
+<!-- Row 2: VAT Report -->
+<tr class="hover:bg-surface-container/50 transition-colors">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">receipt</span>
+<span class="text-sm font-bold">VAT Report (PPN) - Sept</span>
+</div>
+</td>
+<td class="px-6 py-4"><span class="text-xs font-medium bg-purple-100 text-purple-800 px-2 py-0.5 rounded">Perpajakan</span></td>
+<td class="px-6 py-4 text-xs font-medium">Sep 2023</td>
+<td class="px-6 py-4 text-xs font-medium">05 Okt 2023</td>
+<td class="px-6 py-4">
+<span class="flex items-center gap-1.5 text-[10px] font-black uppercase bg-blue-100 text-blue-700 px-2 py-1 rounded w-fit">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-600"></span> Submitted
+                                </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex items-center justify-end gap-3 text-on-surface-variant">
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">download</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">edit</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">share</span></button>
+</div>
+</td>
+</tr>
+<!-- Row 3: Fleet Depreciation -->
+<tr class="hover:bg-surface-container/50 transition-colors">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">minor_crash</span>
+<span class="text-sm font-bold">Fleet Depreciation Schedule</span>
+</div>
+</td>
+<td class="px-6 py-4"><span class="text-xs font-medium bg-amber-100 text-amber-800 px-2 py-0.5 rounded">Aset &amp; Armada</span></td>
+<td class="px-6 py-4 text-xs font-medium">FY 2023</td>
+<td class="px-6 py-4 text-xs font-medium">28 Sep 2023</td>
+<td class="px-6 py-4">
+<span class="flex items-center gap-1.5 text-[10px] font-black uppercase bg-gray-100 text-gray-700 px-2 py-1 rounded w-fit">
+<span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Draft
+                                </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex items-center justify-end gap-3 text-on-surface-variant">
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">download</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">edit</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">share</span></button>
+</div>
+</td>
+</tr>
+<!-- Row 4: Payroll Report -->
+<tr class="hover:bg-surface-container/50 transition-colors">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">payments</span>
+<span class="text-sm font-bold">Monthly Payroll Report</span>
+</div>
+</td>
+<td class="px-6 py-4"><span class="text-xs font-medium bg-pink-100 text-pink-800 px-2 py-0.5 rounded">Payroll</span></td>
+<td class="px-6 py-4 text-xs font-medium">Sep 2023</td>
+<td class="px-6 py-4 text-xs font-medium">30 Sep 2023</td>
+<td class="px-6 py-4">
+<span class="flex items-center gap-1.5 text-[10px] font-black uppercase bg-green-100 text-green-700 px-2 py-1 rounded w-fit">
+<span class="w-1.5 h-1.5 rounded-full bg-green-600"></span> Final
+                                </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex items-center justify-end gap-3 text-on-surface-variant">
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">download</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">edit</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">share</span></button>
+</div>
+</td>
+</tr>
+<!-- Row 5: Insurance -->
+<tr class="hover:bg-surface-container/50 transition-colors">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">shield</span>
+<span class="text-sm font-bold">Insurance Audit Reports</span>
+</div>
+</td>
+<td class="px-6 py-4"><span class="text-xs font-medium bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Kepatuhan</span></td>
+<td class="px-6 py-4 text-xs font-medium">FY 2023</td>
+<td class="px-6 py-4 text-xs font-medium">15 Sep 2023</td>
+<td class="px-6 py-4">
+<span class="flex items-center gap-1.5 text-[10px] font-black uppercase bg-blue-100 text-blue-700 px-2 py-1 rounded w-fit">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-600"></span> Submitted
+                                </span>
+</td>
+<td class="px-6 py-4 text-right">
+<div class="flex items-center justify-end gap-3 text-on-surface-variant">
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">download</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">edit</span></button>
+<button class="hover:text-primary transition-colors"><span class="material-symbols-outlined text-lg">share</span></button>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="px-6 py-4 bg-surface-container-low border-t border-outline flex items-center justify-between">
+<p class="text-xs text-on-surface-variant font-medium">Showing 5 of 42 documents</p>
+<div class="flex items-center gap-2">
+<button class="p-1 px-3 border border-outline rounded bg-white text-xs font-bold text-on-surface-variant hover:bg-surface-container">Prev</button>
+<button class="p-1 px-3 border border-outline rounded bg-primary text-xs font-bold text-white">1</button>
+<button class="p-1 px-3 border border-outline rounded bg-white text-xs font-bold text-on-surface-variant hover:bg-surface-container">2</button>
+<button class="p-1 px-3 border border-outline rounded bg-white text-xs font-bold text-on-surface-variant hover:bg-surface-container">3</button>
+<button class="p-1 px-3 border border-outline rounded bg-white text-xs font-bold text-on-surface-variant hover:bg-surface-container">Next</button>
+</div>
+</div>
+</section>
+<!-- Dynamic Insights Grid (Bento Style) -->
+<section class="mt-8 grid grid-cols-1 md:grid-cols-4 gap-6">
+<div class="md:col-span-2 bg-surface border-t-4 border-primary p-6 rounded-lg shadow-sm">
+<h4 class="text-xs font-black uppercase tracking-widest text-on-surface-variant mb-4">Cash Flow Overview</h4>
+<div class="flex items-end gap-1 mb-2">
+<span class="text-3xl font-black text-on-surface">Rp 1.42B</span>
+<span class="text-green-600 text-xs font-bold mb-1 flex items-center"><span class="material-symbols-outlined text-sm">trending_up</span> 12.4%</span>
+</div>
+<div class="w-full h-2 bg-surface-container rounded-full overflow-hidden mt-4">
+<div class="h-full bg-primary" style="width: 70%"></div>
+</div>
+<div class="flex justify-between mt-2">
+<span class="text-[10px] font-bold text-on-surface-variant uppercase">Current: 1.42B</span>
+<span class="text-[10px] font-bold text-on-surface-variant uppercase">Target: 2.0B</span>
+</div>
+</div>
+<div class="bg-surface border-t-4 border-on-surface p-6 rounded-lg shadow-sm">
+<h4 class="text-xs font-black uppercase tracking-widest text-on-surface-variant mb-4">Tax Compliance</h4>
+<div class="flex items-center justify-center h-20">
+<div class="relative w-16 h-16 rounded-full border-[6px] border-primary flex items-center justify-center">
+<span class="text-sm font-black">98%</span>
+</div>
+</div>
+<p class="text-[10px] text-center font-bold text-on-surface-variant uppercase mt-3">Active Submissions</p>
+</div>
+<div class="bg-primary text-white p-6 rounded-lg shadow-lg shadow-primary/20 relative overflow-hidden group">
+<span class="material-symbols-outlined absolute -bottom-4 -right-4 text-9xl opacity-10 group-hover:scale-110 transition-transform">verified_user</span>
+<h4 class="text-xs font-black uppercase tracking-widest opacity-70 mb-4">Verification Needed</h4>
+<p class="text-2xl font-black mb-1">04</p>
+<p class="text-[10px] font-bold uppercase opacity-80">Documents Pending Audit</p>
+<button class="mt-4 text-[10px] font-black uppercase bg-white text-primary px-3 py-1 rounded group-hover:bg-on-surface group-hover:text-white transition-colors">Review Now</button>
+</div>
+</section>
+</main>
+</body></html>

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Admin Fleet Management</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "primary": "#ff0008",
+              "background-light": "#f8f5f5",
+              "background-dark": "#230f0f",
+            },
+            fontFamily: {
+              "display": ["Inter", "sans-serif"]
+            },
+            borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 antialiased selection:bg-primary selection:text-white">
+<div class="relative flex h-screen w-full flex-row overflow-hidden">
+<!-- Sidebar -->
+<aside class="flex w-64 flex-col border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 h-full flex-shrink-0 transition-all duration-300">
+<div class="flex h-16 items-center gap-3 px-6 border-b border-slate-100 dark:border-slate-800">
+<div class="bg-primary/10 flex items-center justify-center rounded-lg h-8 w-8 text-primary">
+<span class="material-symbols-outlined text-xl">directions_car</span>
+</div>
+<div class="flex flex-col">
+<h1 class="text-base font-bold leading-none text-slate-900 dark:text-white">Rental Mobil</h1>
+<p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Admin Panel</p>
+</div>
+</div>
+<div class="flex flex-1 flex-col justify-between overflow-y-auto p-4 gap-2">
+<nav class="flex flex-col gap-1">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group" href="#">
+<span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">dashboard</span>
+<span class="text-sm font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-primary/10 text-primary dark:text-primary-400" href="#">
+<span class="material-symbols-outlined text-[20px] fill-1">directions_car</span>
+<span class="text-sm font-bold">Manajemen Armada</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group" href="#">
+<span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">calendar_month</span>
+<span class="text-sm font-medium">Penyewaan</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group" href="#">
+<span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">description</span>
+<span class="text-sm font-medium">Laporan</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group" href="#">
+<span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">people</span>
+<span class="text-sm font-medium">Pelanggan</span>
+</a>
+</nav>
+<nav class="flex flex-col gap-1 mt-auto border-t border-slate-100 dark:border-slate-800 pt-4">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group" href="#">
+<span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">settings</span>
+<span class="text-sm font-medium">Pengaturan</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" href="#">
+<span class="material-symbols-outlined text-[20px]">logout</span>
+<span class="text-sm font-medium">Keluar</span>
+</a>
+</nav>
+</div>
+<div class="p-4 border-t border-slate-100 dark:border-slate-800">
+<div class="flex items-center gap-3">
+<div class="h-9 w-9 rounded-full bg-slate-200 dark:bg-slate-700 bg-cover bg-center" data-alt="User profile picture" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCTpdxxssV2ePmOrS79VTM6IrNmDEcWD9c5-gkndRucsR_XCwFC2QtkqomQa2b42y-3y0fXB-0iE0p7bvMWIUidRCBzQga4en995ZCnsx41s7zJhJjvdYCbeMtRiH-zPXrNOibYr7l-XmayJuEqe0Cg41mVOjs9IaAYtLV2pHN1_ZC25zIBY7AKoZhd59_RwhcGolQWefiaMf9Hw1jNhFI7YytseG-xNCtYplv0A_p9npNJVhWOkekU5P8Mc3QfygqjJZPe13MLdX4B');"></div>
+<div class="flex flex-col">
+<span class="text-sm font-medium text-slate-900 dark:text-white">Admin User</span>
+<span class="text-xs text-slate-500 dark:text-slate-400">admin@rental.com</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+<!-- Top Header Mobile Only (Optional if responsive needed later) -->
+<!-- Main Scrollable Area -->
+<div class="flex-1 overflow-y-auto p-8">
+<div class="max-w-7xl mx-auto space-y-6">
+<!-- Header Section -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+<div>
+<h2 class="text-2xl font-bold text-slate-900 dark:text-white">Manajemen Armada</h2>
+<p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Kelola daftar kendaraan yang tersedia untuk disewa.</p>
+</div>
+<button class="flex items-center justify-center gap-2 bg-primary hover:bg-red-700 text-white px-4 py-2.5 rounded-lg font-medium text-sm transition-all shadow-lg shadow-red-500/20 active:scale-95">
+<span class="material-symbols-outlined text-[20px]">add</span>
+<span>Tambah Mobil</span>
+</button>
+</div>
+<!-- Stats Cards -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+<div class="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-xs font-medium uppercase tracking-wider">Total Armada</span>
+<span class="material-symbols-outlined text-primary text-xl">directions_car</span>
+</div>
+<div class="text-2xl font-bold text-slate-900 dark:text-white">24</div>
+<div class="text-xs text-green-600 flex items-center mt-1">
+<span class="material-symbols-outlined text-sm mr-1">trending_up</span>
+                            +2 unit bulan ini
+                        </div>
+</div>
+<div class="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-xs font-medium uppercase tracking-wider">Tersedia</span>
+<span class="material-symbols-outlined text-green-500 text-xl">check_circle</span>
+</div>
+<div class="text-2xl font-bold text-slate-900 dark:text-white">18</div>
+<div class="text-xs text-slate-500 mt-1">Siap disewa</div>
+</div>
+<div class="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-xs font-medium uppercase tracking-wider">Sedang Disewa</span>
+<span class="material-symbols-outlined text-amber-500 text-xl">key</span>
+</div>
+<div class="text-2xl font-bold text-slate-900 dark:text-white">4</div>
+<div class="text-xs text-slate-500 mt-1">Kembali hari ini: 1</div>
+</div>
+<div class="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-xs font-medium uppercase tracking-wider">Perawatan</span>
+<span class="material-symbols-outlined text-slate-400 text-xl">build</span>
+</div>
+<div class="text-2xl font-bold text-slate-900 dark:text-white">2</div>
+<div class="text-xs text-slate-500 mt-1">Estimasi selesai: 2 hari</div>
+</div>
+</div>
+<!-- Add Car Form Section (Visual representation as part of the flow/modal preview) -->
+<div class="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 overflow-hidden">
+<div class="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+<h3 class="font-semibold text-slate-900 dark:text-white">Quick Add / Edit Form</h3>
+<button class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+<div class="p-6 grid grid-cols-1 lg:grid-cols-3 gap-8">
+<!-- Image Upload Area -->
+<div class="lg:col-span-1">
+<label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Foto Mobil</label>
+<div class="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-slate-300 dark:border-slate-700 border-dashed rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer group">
+<div class="space-y-1 text-center">
+<span class="material-symbols-outlined text-4xl text-slate-400 group-hover:text-primary transition-colors">add_photo_alternate</span>
+<div class="flex text-sm text-slate-600 dark:text-slate-400 justify-center">
+<label class="relative cursor-pointer rounded-md font-medium text-primary hover:text-red-700 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-primary" for="file-upload">
+<span>Upload a file</span>
+<input class="sr-only" id="file-upload" name="file-upload" type="file"/>
+</label>
+<p class="pl-1">or drag and drop</p>
+</div>
+<p class="text-xs text-slate-500">PNG, JPG, GIF up to 10MB</p>
+</div>
+</div>
+</div>
+<!-- Form Fields -->
+<div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="col-span-2 md:col-span-1">
+<label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nama Mobil</label>
+<input class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm focus:border-primary focus:ring-primary sm:text-sm py-2" placeholder="e.g. Avanza Veloz" type="text"/>
+</div>
+<div class="col-span-2 md:col-span-1">
+<label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Merek</label>
+<select class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm focus:border-primary focus:ring-primary sm:text-sm py-2">
+<option>Toyota</option>
+<option>Honda</option>
+<option>Suzuki</option>
+<option>Daihatsu</option>
+<option>Mitsubishi</option>
+</select>
+</div>
+<div class="col-span-2 md:col-span-1">
+<label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Harga / Hari (IDR)</label>
+<div class="relative rounded-md shadow-sm">
+<div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+<span class="text-slate-500 sm:text-sm">Rp</span>
+</div>
+<input class="block w-full rounded-lg border-slate-300 dark:border-slate-700 pl-10 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:border-primary focus:ring-primary sm:text-sm py-2" placeholder="0" type="text"/>
+</div>
+</div>
+<div class="col-span-2 md:col-span-1">
+<label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Status</label>
+<select class="w-full rounded-lg border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm focus:border-primary focus:ring-primary sm:text-sm py-2">
+<option value="available">Tersedia</option>
+<option value="rented">Disewa</option>
+<option value="maintenance">Perawatan</option>
+</select>
+</div>
+<div class="col-span-2 flex justify-end gap-3 mt-2">
+<button class="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary dark:bg-slate-800 dark:text-slate-200 dark:border-slate-600 dark:hover:bg-slate-700">Cancel</button>
+<button class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary shadow-sm shadow-red-500/30">Simpan Mobil</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Data Table -->
+<div class="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 overflow-hidden">
+<div class="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+<div class="relative max-w-xs w-full">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-slate-400 text-[20px]">search</span>
+</div>
+<input class="block w-full pl-10 pr-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg leading-5 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm transition duration-150 ease-in-out" placeholder="Cari mobil..." type="text"/>
+</div>
+<div class="flex gap-2">
+<button class="p-2 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
+<span class="material-symbols-outlined text-[20px]">filter_list</span>
+</button>
+<button class="p-2 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
+<span class="material-symbols-outlined text-[20px]">download</span>
+</button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+<thead class="bg-slate-50 dark:bg-slate-800/50">
+<tr>
+<th class="px-6 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider w-12" scope="col">#</th>
+<th class="px-6 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider w-24" scope="col">Foto</th>
+<th class="px-6 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" scope="col">Nama / Merek</th>
+<th class="px-6 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" scope="col">Harga / Hari</th>
+<th class="px-6 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" scope="col">Status</th>
+<th class="px-6 py-3 text-right text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" scope="col">Aksi</th>
+</tr>
+</thead>
+<tbody class="bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-slate-700">
+<!-- Row 1 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">1</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="h-12 w-16 bg-slate-100 rounded-md bg-cover bg-center overflow-hidden border border-slate-200 dark:border-slate-700" data-alt="White Toyota Avanza parked" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAXx0DaGs9I1Tvo1ivoGLMFJAp2G3yYkHhRT6CLQabPtNJgVcwS8c2X1R5MEv1ZjIqcSWm2-p9sbLZo6go4xFZ7AZbqI2zO6yI8XMAzf5k0AeqRtunMYs2gRXgy_N-BIBAxWGkjGSozEC9a2M2y89d7BKQzrMFTwMI0xbvXseK2qC6WLmsuJyvfhOuyO2NYu87ksZz-d43kV5OJmsgDGK045AXqYCfTxxKX_4sYXA_E7AJPQ1gAdSM8lYfEQZZ2ygCNPEBUGKaVcyIS');"></div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="text-sm font-medium text-slate-900 dark:text-white">Toyota Avanza</div>
+<div class="text-xs text-slate-500 dark:text-slate-400">MPV • 2022</div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white font-medium">
+                                        Rp 350.000
+                                    </td>
+<td class="px-6 py-4 whitespace-nowrap">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5"></span>
+                                            Tersedia
+                                        </span>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+<div class="flex items-center justify-end gap-2">
+<button class="text-slate-400 hover:text-primary transition-colors p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="text-slate-400 hover:text-red-600 transition-colors p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">2</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="h-12 w-16 bg-slate-100 rounded-md bg-cover bg-center overflow-hidden border border-slate-200 dark:border-slate-700" data-alt="Blue Honda hatchback" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuDQIBS95AjuaDGPclZKWdyiNaNLO1MJxte4YUF9LQRvTUKXwmNu2Df3H9z4AOJDf6MfRt1IiRM-QKXrXYugHDSQFcXLrSaNVXZNU5Mas2pMtMS-l4SwicvhJax7wf0yKbZNGvD_1TNjNmuwxF2uikNbBWCmsmyGlOPV4dMxJ74aR1_LtAkkdwapUz_BKs6I2Uaz7NNMnDnODGVO-uQ8rhvDCmdlFvDY8hHn2xqyjYxyo1vqJQcp6ASRKoSnA1xr7IQqaecosMdPtfs0');"></div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="text-sm font-medium text-slate-900 dark:text-white">Honda Brio</div>
+<div class="text-xs text-slate-500 dark:text-slate-400">City Car • 2021</div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white font-medium">
+                                        Rp 300.000
+                                    </td>
+<td class="px-6 py-4 whitespace-nowrap">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+<span class="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5"></span>
+                                            Disewa
+                                        </span>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+<div class="flex items-center justify-end gap-2">
+<button class="text-slate-400 hover:text-primary transition-colors p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="text-slate-400 hover:text-red-600 transition-colors p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">3</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="h-12 w-16 bg-slate-100 rounded-md bg-cover bg-center overflow-hidden border border-slate-200 dark:border-slate-700" data-alt="Silver family SUV" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAeCwkMfCNDJUi0LUvsPfv5X34DKZkF6a9jw5r8hDv430T19IXhe4417m_uQAxq4xvjBtsY9vA9EQRlkY0rUyGHE7LXE8Zc1wuWnrDZol7N7HJA3QxtG9bflwP6ygYsisZQWRsbJwiqBqVyB-sTK_eET1TGZZtHxQDTpsrvwk_YFINrn2YpKmGvJX2Gysv2ijtHl4B81MBGMZKyb4rJ2VP89PXmG3mInqU4tvI4JAn6fNMXyH6m5LRRdo1RrmT_Lo-hgfF4JbMpWxuf');"></div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="text-sm font-medium text-slate-900 dark:text-white">Suzuki Ertiga</div>
+<div class="text-xs text-slate-500 dark:text-slate-400">MPV • 2020</div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white font-medium">
+                                        Rp 325.000
+                                    </td>
+<td class="px-6 py-4 whitespace-nowrap">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5"></span>
+                                            Tersedia
+                                        </span>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+<div class="flex items-center justify-end gap-2">
+<button class="text-slate-400 hover:text-primary transition-colors p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="text-slate-400 hover:text-red-600 transition-colors p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">4</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="h-12 w-16 bg-slate-100 rounded-md bg-cover bg-center overflow-hidden border border-slate-200 dark:border-slate-700" data-alt="Red sports sedan" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAtJ7dcV4klYOG8qeKyJe21l7mohKvmyfdhZ9883u7K0JRy-KHDiPKs5-0CI836FZxLucaAlX46hIxWE71V8YJo_qm6lhOnb1RGjrkpPVX0CY4gGEeywiUkTycZlqJQuYd5uWd6Ofd8YtCpxvfDviRF3lcuvRJiyEde3gQYIDMXiKqYlyQKmtGmcc_sswyPyhh-ssMar0IcMWIroypXJibtnvOYuzdUNS-R_gp_SKxNhevMgtY-q5JGkYqgFyG1TlNeYg0KyMpcwUu8');"></div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="text-sm font-medium text-slate-900 dark:text-white">Daihatsu Xenia</div>
+<div class="text-xs text-slate-500 dark:text-slate-400">MPV • 2021</div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white font-medium">
+                                        Rp 310.000
+                                    </td>
+<td class="px-6 py-4 whitespace-nowrap">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-300">
+<span class="w-1.5 h-1.5 rounded-full bg-slate-500 mr-1.5"></span>
+                                            Perawatan
+                                        </span>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+<div class="flex items-center justify-end gap-2">
+<button class="text-slate-400 hover:text-primary transition-colors p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="text-slate-400 hover:text-red-600 transition-colors p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 5 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">5</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="h-12 w-16 bg-slate-100 rounded-md bg-cover bg-center overflow-hidden border border-slate-200 dark:border-slate-700" data-alt="Mitsubishi Xpander white" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuDg07kDBIV6fiqzejKGQe_YPAgUAfiCPPLPUC_ERBLHakebYUkJm78LyWKsxx4RyqumODnYnG6-7-ppj5nwOTOgEZ57tG6VBcdZWG7vEFEOSPXbkO7E8bJhgWDCWzmJze7dRhPpVbBWgc1xFXbdooOuv5LOF0C0rzRvVGTzB6cT_Ei-rprG6lEoA98UnM7STMUjv6Ju4YR72nyJFWDIShY3mVTyzcmuAKaOAfOL_866DJLqYLVQc6pHAUZMPBQnU6akrSa1GkTvI7rd');"></div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap">
+<div class="text-sm font-medium text-slate-900 dark:text-white">Mitsubishi Xpander</div>
+<div class="text-xs text-slate-500 dark:text-slate-400">SUV • 2023</div>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-sm text-slate-900 dark:text-white font-medium">
+                                        Rp 450.000
+                                    </td>
+<td class="px-6 py-4 whitespace-nowrap">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5"></span>
+                                            Tersedia
+                                        </span>
+</td>
+<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+<div class="flex items-center justify-end gap-2">
+<button class="text-slate-400 hover:text-primary transition-colors p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="text-slate-400 hover:text-red-600 transition-colors p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination -->
+<div class="bg-white dark:bg-slate-900 px-4 py-3 flex items-center justify-between border-t border-slate-200 dark:border-slate-800 sm:px-6">
+<div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+<div>
+<p class="text-sm text-slate-700 dark:text-slate-400">
+                                    Showing
+                                    <span class="font-medium text-slate-900 dark:text-white">1</span>
+                                    to
+                                    <span class="font-medium text-slate-900 dark:text-white">5</span>
+                                    of
+                                    <span class="font-medium text-slate-900 dark:text-white">24</span>
+                                    results
+                                </p>
+</div>
+<div>
+<nav aria-label="Pagination" class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
+<a class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700" href="#">
+<span class="sr-only">Previous</span>
+<span class="material-symbols-outlined text-[20px]">chevron_left</span>
+</a>
+<a aria-current="page" class="z-10 bg-primary/10 border-primary text-primary relative inline-flex items-center px-4 py-2 border text-sm font-medium" href="#">
+                                        1
+                                    </a>
+<a class="bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700 relative inline-flex items-center px-4 py-2 border text-sm font-medium" href="#">
+                                        2
+                                    </a>
+<a class="bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700 relative inline-flex items-center px-4 py-2 border text-sm font-medium" href="#">
+                                        3
+                                    </a>
+<span class="relative inline-flex items-center px-4 py-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium text-slate-700 dark:text-slate-400">
+                                        ...
+                                    </span>
+<a class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-medium text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700" href="#">
+<span class="sr-only">Next</span>
+<span class="material-symbols-outlined text-[20px]">chevron_right</span>
+</a>
+</nav>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

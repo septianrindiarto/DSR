@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #ff0008;
+  --color-primary-dark: #cc0006;
+  --color-primary-hover: #d40007;
+  --color-primary-light: #ffe5e6;
+  --color-whatsapp: #25D366;
+  --color-background-light: #fcf8f8;
+  --color-background-dark: #230f0f;
+  --color-text-main: #1d0c0d;
+  --color-text-sub: #a14548;
+  --color-border-color: #eacdce;
+  --color-sidebar-dark: #1a1a1a;
+  --color-sidebar-text: #d4d4d4;
+  --color-sidebar-hover: #2e2e2e;
+
+  --font-display: "Outfit", "Inter", sans-serif;
+  --font-body: "Inter", sans-serif;
+
+  /* Material Design 3 Custom Tokens for Jadwal Mobil */
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-fixed: #e0f2fe;
+  --color-secondary-fixed: #f5f5f5;
+  --color-surface-variant: #f1f5f9;
+  --color-on-tertiary-container: #075985;
+  --color-on-error: #ffffff;
+  --color-on-primary-fixed: #4c0519;
+  --color-surface-dim: #f1f1f1;
+  --color-error: #ef4444;
+  --color-primary-fixed: #ffe4e6;
+  --color-outline-variant: #cbd5e1;
+  --color-surface-bright: #ffffff;
+  --color-secondary: #1a1a1a;
+  --color-inverse-surface: #1a1a1a;
+  --color-surface-container: #f1f1f1;
+  --color-surface-container-high: #f1f1f1;
+  --color-tertiary-container: #e0f2fe;
+  --color-surface-container-lowest: #ffffff;
+  --color-primary-container: #fee2e2;
+  --color-surface: #ffffff;
+  --color-on-primary-fixed-variant: #be123c;
+  --color-on-surface-variant: #64748b;
+  --color-surface-tint: #ff0008;
+  --color-on-primary-container: #991b1b;
+  --color-inverse-primary: #ff8a8d;
+  --color-on-secondary-fixed: #171717;
+  --color-on-tertiary-fixed-variant: #075985;
+  --color-on-primary: #ffffff;
+  --color-on-secondary-container: #ffffff;
+  --color-on-secondary-fixed-variant: #404040;
+  --color-tertiary-fixed-dim: #bae6fd;
+  --color-on-background: #0f172a;
+  --color-tertiary: #0ea5e9;
+  --color-on-secondary: #d4d4d4;
+  --color-surface-container-low: #ffffff;
+  --color-on-tertiary-fixed: #082f49;
+  --color-background: #f8f5f5;
+  --color-secondary-container: #2e2e2e;
+  --color-secondary-fixed-dim: #e5e5e5;
+  --color-inverse-on-surface: #f8f5f5;
+  --color-primary-fixed-dim: #fecdd3;
+  --color-surface-container-highest: #ccc;
+  --color-on-error-container: #991b1b;
+  --color-outline: #e2e8f0;
+  --color-on-surface: #0f172a;
+  --color-error-container: #fee2e2;
+}
+
+body {
+  font-family: var(--font-body);
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

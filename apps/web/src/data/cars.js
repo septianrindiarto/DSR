@@ -1,0 +1,122 @@
+const cars = [
+  {
+    id: 1,
+    brand: "Toyota",
+    name: "New Avanza",
+    price: "Rp350rb",
+    priceFormatted: "Rp 350.000",
+    priceNum: 350000,
+    seats: "7 Kursi",
+    transmission: "Manual",
+    fuel: "Bensin",
+    features: ["AC Double"],
+    description:
+      "Nikmati perjalanan nyaman bersama keluarga dengan Toyota New Avanza. Mobil MPV favorit keluarga Indonesia ini dilengkapi dengan fitur keselamatan terbaru, interior luas, dan efisiensi bahan bakar yang optimal. Cocok untuk perjalanan dalam kota maupun luar kota.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuCXJg525f92Ett12VCDD0wIUXzAKojZdoeqiIezSIWq7vZnrMgWolHk3DID2DTJ6DAaITg3-KS3Y8NQ6Po2RLbATJvusgBc8BkqsVnAYerV_-K_wYv5LOsUEgax6YV4mOyLAmLh9LRCh0uuWL1Qp5eck55yRs8FjF1JWUQHIl-KAtMkXn4cSizRxlDmAuv53mefa12Vd5AhoJV7_gIH-hwIW0hlsbxsH5BuN1Zt4KG175uU0t0P-8FRioipVH6HGnrvyZQ_6roFtunO",
+    imageAlt: "White Toyota Avanza front view",
+    badge: "Best Seller",
+    gallery: [
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuAx3Cdk5PJ-yL11tatCH9rE6o0HQYIBu-yE0vTsKBk9mSGUQlLmtxOSAdJCNEQ7C5hnwE6WefW0yXP4SOcehFvle9UT9fzWQAteUGQS4_40hxy46sqD_8i-WLn03yulo02gIq09tRMR_XQcIJA0v1bokCcQBu-kkg-j2hGZSM-4AXkuJp-CzzqvbqsVqHzI7XBNb-OXKhSZpFDUvpt1fJaDnLmK7AM9Q5OSv6wy9hFj01g-s1_RWSyHBXPsx8y9TwBJIOnKDPT9Q6i3",
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuDmFq_HuqBE3aZ7bownjZaMbDmUQvTsM4Pe6X9sJmuFuzbB-e5z4zmyiVhBnVfvms2A_zsvHSp2PcEoPbJqFj2vu_ma2JbRAJd1Z2PHlTakX7DkOaRx2k755hIxhChEkyFCkVAYwH1_JrwsmiLWoAPCy36-gI0gH_w_Wd6dntLLyJ5xylIte1yKerpv1pORmCJGDWCm4DwdnnhjqaRshzn1NiDNxJLI4I-UTVld4tIzB5fLPaQdnEFmixXvIny4BBVZ3MMEAzzJf1QG",
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuDMoQ2UWQLMR6j8ks_vEWcg1T7zpEc9T5LnrcqEomAdUhC3vP59vQy-qPv0NgNzJGxZS55epevqnW3ruX6OU-0wDaj6PKHkDqSac37rTtGU8KeOcdUnIJ5s-vbUZSwFxlKurlbQ8MF_NeStNWMePGA6BYEXKGquu_sIEIHv9Nvrd4o2pnzaUksBApi9gytoZAJYAzf2Vb04gR4rtm4BKV1sqTXz4yNL7UktDRr3WpGCGpPS2R36rzpx5z6UTo_YEtxfvUlLvLeGNlNg",
+    ],
+  },
+  {
+    id: 2,
+    brand: "Honda",
+    name: "All New Brio",
+    price: "Rp300rb",
+    priceFormatted: "Rp 300.000",
+    priceNum: 300000,
+    seats: "5 Kursi",
+    transmission: "Auto",
+    fuel: "Bensin",
+    features: ["AC"],
+    description:
+      "Honda All New Brio adalah pilihan tepat untuk mobilitas harian di perkotaan. Desain sporty dan modern, dilengkapi dengan mesin irit bahan bakar serta fitur keselamatan canggih.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuC5JpNnufqMcSsjMjXwQQqjkpAOCM50lB1ndXdgT-WSomvA7ZknhV5c8Ky1VvmhjB3R4oyUz6eGG-lwlL9hqiKd1zd1UQPP1qsAsXv-8mzz8PLP9ryUDoB6lkyI3uMvIL4JWE-1EPx1rGpDfUVjCaP7Uzed5X6_O5TJi4Zk8OkzCMXSfsGGnZFQE-xn1IKIx1lsg-_zoLEVGXJ51A69ZWFr7H2IxPFPChBE-QrAdwaxpkLwty-W0Ry6beTj-2Kf7ClhZk64voMfJfaD",
+    imageAlt: "Red Honda Brio side view",
+    badge: null,
+    gallery: [],
+  },
+  {
+    id: 3,
+    brand: "Toyota",
+    name: "Innova Reborn",
+    price: "Rp500rb",
+    priceFormatted: "Rp 500.000",
+    priceNum: 500000,
+    seats: "7 Kursi",
+    transmission: "Manual",
+    fuel: "Diesel",
+    features: ["AC Double"],
+    description:
+      "Toyota Innova Reborn menawarkan kenyamanan kelas premium dengan ruang kabin luas dan performa mesin diesel yang tangguh. Ideal untuk perjalanan keluarga jarak jauh.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuCC4TM7jsU7pzclblfQsbzHUHm5oEy1YFnB5Mqb_lq6umyHUYtJSJjEFw118EDiFy-5D7vHjIAgd3IutFM2qWtky4qrHg8hI6ZmWjfWRN1Jf0Ox0WOu2ZK-cTVUP9VpffhY_0EmGF2CuUhuX_6TfM6wPOzgrzjWRcd3kFca8m0cboa7L17nEooGOgtZ3QssRGXXgJZHyg953R4WN_plf4wamJAG-GsR5nMwDNfj8ll1I6krvIx5eGVVwgF5PnKL7ghXOSpgwwnpomKf",
+    imageAlt: "Black Toyota Innova Reborn",
+    badge: null,
+    gallery: [],
+  },
+  {
+    id: 4,
+    brand: "Mitsubishi",
+    name: "Pajero Sport",
+    price: "Rp850rb",
+    priceFormatted: "Rp 850.000",
+    priceNum: 850000,
+    seats: "7 Kursi",
+    transmission: "Auto",
+    fuel: "Diesel",
+    features: ["AC Double"],
+    description:
+      "Mitsubishi Pajero Sport adalah SUV tangguh dengan kemampuan off-road luar biasa. Dilengkapi dengan teknologi Super Select 4WD, cocok untuk petualangan maupun penggunaan sehari-hari.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuAmLRw6GCh8zNpTW9N5e72Ltx7JRXwk2RQAqdZK2d1VLgbAjC8GXzEB6yI6mjcdkHiEtKw_CDH5r8-bP31i1jXtXRk6rFOlUFsb5pGVH_uVWj8dk74LATB1GuAAw27rdpP5F_IRj3QDznhxJfnYNViQfBZbO9OsXZTHjKz_hB_IE3Vg8QxhcVPaXJPbTrzo0g3oJyTdLbDNY4UE8WBOzIS2WKhaP1VFb8oKOLz4Oljr_3-26q4WvnRS1Qdl-SCO-6DhKzqK5bSVAcD6",
+    imageAlt: "Mitsubishi Pajero Sport",
+    badge: null,
+    gallery: [],
+  },
+  {
+    id: 5,
+    brand: "Honda",
+    name: "Civic Turbo",
+    price: "Rp900rb",
+    priceFormatted: "Rp 900.000",
+    priceNum: 900000,
+    seats: "5 Kursi",
+    transmission: "Auto",
+    fuel: "Pertamax",
+    features: ["AC"],
+    description:
+      "Honda Civic Turbo menawarkan performa mesin turbo yang bertenaga dengan desain sedan sporty dan elegan. Pilihan sempurna untuk Anda yang menginginkan kenyamanan dan gaya.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuDJ7eIYOdpRI_KPrAXmimbbJKqIXXAW4ylko5p1R40rUSai9_OpWmOc7Ao38HgQT2GYV7YSp_BBstGFUOgXRuK3JPsKxbX5lFhzFG7e10ciCQpZPe45TIMdbzy7CwiwolF0OOOGaggQu2tdtjthKJH-F_rXGXzIEpPhjv9pvClmpYVwHCyXsgElNPZCBYGZdpjj-mtgvoW_BNpsF35xmlCU_Gvdk97-KhtXC0mY9UxToTqgvu-KDxStn-3HULt-x0tNnv-1QUN6bhmn",
+    imageAlt: "Honda Civic Turbo",
+    badge: null,
+    gallery: [],
+  },
+  {
+    id: 6,
+    brand: "Toyota",
+    name: "Fortuner VRZ",
+    price: "Rp950rb",
+    priceFormatted: "Rp 950.000",
+    priceNum: 950000,
+    seats: "7 Kursi",
+    transmission: "Auto",
+    fuel: "Diesel",
+    features: ["AC Double"],
+    description:
+      "Toyota Fortuner VRZ adalah SUV premium dengan performa diesel yang handal dan interior mewah. Aman dan nyaman untuk segala medan perjalanan.",
+    image:
+      "https://lh3.googleusercontent.com/aida-public/AB6AXuDzUT6FEvo6lUg22jfLWOEz9r4W3cTgKk0YDpuSgtd_p-JYpm3-4UDd1VLPfGmcZR_c-G8ePlPakls64O2vuqzwwBXEfVFuGf5G4VbEO8WFGiPpASf8j8xVzWwSD_HREsYoXB8xXw3BE7np9ChCIrysoAI9rlHN_OAtAVSvkIb-BK95HbRB9v38n8MhFAA52Sh8HaSzz75ZLTPX2sTIn2kHbttwlfaqWOEBvnBVRWdvWTQ3NLQ8cakb9KaVDmK_GmA3ujwcLPA-o6Gs",
+    imageAlt: "Silver Toyota Fortuner",
+    badge: null,
+    gallery: [],
+  },
+];
+
+export default cars;
