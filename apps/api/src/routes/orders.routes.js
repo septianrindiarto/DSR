@@ -4,19 +4,27 @@ import { customerService } from '../services/customer.service.js';
 import { carService } from '../services/car.service.js';
 import { driverService } from '../services/driver.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { notifyOrderCreated } from '../services/telegram.service.js';
+import { requireAuth, requireAdmin, requireRole } from '../middleware/auth.js';
+import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { activityLogger } from '../middleware/logger.js';
 import { logActivity } from '../middleware/logger.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { db } from '../db/index.js';
-import { orders, customers, drivers, cars } from '../db/schema.js';
+import { orders, customers, drivers, cars, organizations } from '../db/schema.js';
 import { like, sql } from 'drizzle-orm';
 
 const router = Router();
 
 const publicOrderSchema = z.object({
-    carId: z.number().int(),
+    // carId becomes OPTIONAL. Customers now pick a vehicle CATEGORY (MPV,
+    // SUV, etc.) and the agency assigns a specific car later. The category
+    // request travels in carCategoryRequested OR carCategoryNote (free text
+    // when category=Other).
+    carId: z.number().int().nullable().optional(),
+    carCategoryRequested: z.string().max(50).nullable().optional(),
+    carCategoryNote: z.string().max(255).nullable().optional(),
     fullName: z.string().min(1, 'Nama wajib diisi'),
     whatsapp: z.string().min(1, 'WhatsApp wajib diisi'),
     customerType: z.enum(['private', 'company']).optional().default('private'),
@@ -25,8 +33,6 @@ const publicOrderSchema = z.object({
     returnDate: z.string().min(1, 'Tanggal selesai wajib diisi'),
     pickupLocation: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
-    // Extra Rekap Order fields — captured on the booking form so the saved
-    // order matches every column shown in Rekap Order.
     package: z.string().nullable().optional(),
     destination: z.string().nullable().optional(),
     overnightNights: z.union([z.string(), z.number()]).optional(),
@@ -41,12 +47,12 @@ const publicOrderSchema = z.object({
 router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
     try {
         const {
-            carId, fullName, whatsapp, customerType, companyName,
+            carId, carCategoryRequested, carCategoryNote,
+            fullName, whatsapp, customerType, companyName,
             pickupDate, returnDate, pickupLocation, notes,
             package: pkg, destination, overnightNights, overtimeHours, bailout,
         } = req.body;
 
-        // Find or create customer (with type / company info)
         let customer = await customerService.findOrCreate({
             name: fullName,
             phone: whatsapp,
@@ -55,7 +61,6 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             companyName: companyName || null,
         });
 
-        // If existing customer was missing type/companyName info or it changed, patch it
         const needsTypeUpdate = customerType && customer.customerType !== customerType;
         const needsCompanyUpdate = (customerType === 'company') && companyName && customer.companyName !== companyName;
         if (customer && (needsTypeUpdate || needsCompanyUpdate)) {
@@ -65,21 +70,34 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             });
         }
 
-        // Get car to calculate price
-        const car = await carService.findById(carId);
-        if (!car) return res.status(404).json({ error: 'Mobil tidak ditemukan' });
+        // Customers now pick a vehicle CATEGORY (MPV, SUV, City Car, Pickup,
+        // CDE, Other). carId stays NULL until the agency assigns a specific
+        // car. Until a car is assigned, dailyRate and totalPrice cannot be
+        // computed, so we persist zeros and let the admin set them on edit.
+        let car = null;
+        if (carId) {
+            car = await carService.findById(carId);
+            if (!car) return res.status(404).json({ error: 'Mobil tidak ditemukan' });
+        }
 
-        // Calculate days and price
         const start = new Date(pickupDate);
         const end = new Date(returnDate);
         const totalDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
         if (totalDays <= 0) return res.status(400).json({ error: 'Tanggal tidak valid' });
 
-        const dailyRate = Number(car.price);
-        const totalPrice = dailyRate * totalDays;
+        const dailyRate = car ? Number(car.price) : 0;
+        const totalPrice = car ? dailyRate * totalDays : 0;
+
+        // Surface the requested category INSIDE notes so the admin reading the
+        // order sees it without needing a schema migration. If/when we add a
+        // proper car_category_requested column we can stop prefixing.
+        const categoryLine = carCategoryRequested
+            ? `Permintaan Kendaraan: ${carCategoryRequested}${carCategoryNote ? ` (${carCategoryNote})` : ''}`
+            : '';
+        const combinedNotes = [categoryLine, notes || ''].filter(Boolean).join('\n').trim() || null;
 
         const order = await orderService.create({
-            carId,
+            carId: carId || null,
             customerId: customer.id,
             pickupDate: start,
             returnDate: end,
@@ -87,8 +105,7 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             totalDays,
             dailyRate: String(dailyRate),
             totalPrice: String(totalPrice),
-            notes: notes || null,
-            // Extra Rekap Order fields persisted directly from the booking form
+            notes: combinedNotes,
             package: pkg || null,
             destination: destination || null,
             overnightNights: Number(overnightNights || 0),
@@ -101,8 +118,26 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             action: 'create',
             entity: 'order',
             entityId: order.id,
-            details: { customerName: fullName, carName: car.name, orderNumber: order.orderNumber },
+            details: {
+                customerName: fullName,
+                carName: car?.name || (carCategoryRequested || 'belum ditugaskan'),
+                orderNumber: order.orderNumber,
+            },
         });
+
+        // Fire-and-forget: push a Telegram alert to the agency owner so they
+        // can follow up with the customer via WhatsApp. We do NOT await this
+        // so a Telegram outage cannot delay the customer-facing response.
+        // The source label distinguishes between landing-page bookings (no
+        // session) and dashboard bookings (logged-in client). req.user is
+        // populated by Better Auth's session middleware only if the caller
+        // had a valid cookie; absence implies the anonymous landing path.
+        notifyOrderCreated({
+            order,
+            car,
+            customer,
+            source: req.user ? 'dashboard' : 'landing',
+        }).catch(() => { /* logged inside */ });
 
         res.status(201).json({
             success: true,
@@ -116,8 +151,9 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-// Admin routes
-router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
+// List orders — accessible to ALL authenticated roles. Data scoping inside
+// the handler (Task 16) filters down to "own orders only" for plain clients.
+router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const { search, status, sortBy, sortOrder, page, limit } = req.query;
         const result = await orderService.findAll({
@@ -347,7 +383,9 @@ router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 
     } catch (error) { next(error); }
 });
 
-router.get('/:id', requireAuth, requireAdmin, async (req, res, next) => {
+// Single-order detail — accessible to all roles; ownership check inside the
+// handler (Task 16) returns 404 if a plain client tries to read someone else's order.
+router.get('/:id', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const order = await orderService.findById(parseInt(req.params.id));
         if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
@@ -407,6 +445,41 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
         }
         if (!customer) return res.status(400).json({ error: 'Pelanggan wajib diisi' });
 
+        // Resolve target org + user linkage for client-side visibility.
+        //
+        // When agency staff uses Tambah Rekap to book on behalf of a client
+        // (e.g. DSR types "PT. XYZ"), the order MUST land in PT. XYZ's
+        // org_id, not the agency's. Otherwise septian (PT. XYZ's admin)
+        // never sees the order even though the scope check is correct.
+        //
+        // Same logic for customers.user_id: if the matched org has an
+        // admin_user_id and the resolved customer row had no user link yet,
+        // backfill it so the order also satisfies the customers.user_id
+        // branch of the scope. This makes Tambah Rekap entries visible to
+        // both client admins AND client users in that org.
+        let targetOrgId = req.user.organizationId || null;
+        if (body.companyName && body.companyName.trim()) {
+            const needle = body.companyName.toLowerCase().trim();
+            const [matchedOrg] = await db.select({
+                id: organizations.id,
+                adminUserId: organizations.adminUserId,
+            })
+                .from(organizations)
+                .where(sql`LOWER(TRIM(${organizations.name})) = ${needle}`)
+                .limit(1);
+            if (matchedOrg) {
+                targetOrgId = matchedOrg.id;
+                if (!customer.userId && matchedOrg.adminUserId) {
+                    try {
+                        await customerService.update(customer.id, { userId: matchedOrg.adminUserId });
+                        customer.userId = matchedOrg.adminUserId;
+                    } catch (linkErr) {
+                        console.warn('[orders.create] customer.user_id backfill failed:', linkErr?.message);
+                    }
+                }
+            }
+        }
+
         // Dates
         const now = new Date();
         const pickupDate = body.pickupDate ? new Date(body.pickupDate) : now;
@@ -435,10 +508,20 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             overnightNights: Number(body.overnightNights || 0),
             overtimeHours: String(Number(body.overtimeHours || 0)),
             bailout: String(Number(body.bailout || 0)),
-            organizationId: req.user.organizationId || null,
+            organizationId: targetOrgId,
             createdBy: req.user.id,
             isDemo: req.user.isDemo || false,
         });
+
+        // Fire-and-forget Telegram notification. Source tag distinguishes
+        // this admin-created order from public-form bookings.
+        const carRow = body.carId ? await carService.findById(body.carId).catch(() => null) : null;
+        notifyOrderCreated({
+            order,
+            car: carRow,
+            customer,
+            source: 'agency',
+        }).catch(() => { /* logged inside */ });
 
         res.status(201).json(order);
     } catch (error) { next(error); }
@@ -538,21 +621,11 @@ router.put('/:id/assign-driver', requireAuth, requireAdmin, activityLogger('upda
 
 router.post('/:id/send-confirmation', requireAuth, requireAdmin, async (req, res, next) => {
     try {
-        const order = await orderService.findById(parseInt(req.params.id));
-        if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
-
-        const confirmation = whatsappService.buildConfirmationMessage(order);
-        await orderService.markWhatsAppSent(order.id);
-
-        await logActivity({
-            userId: req.user.id,
-            action: 'confirm',
-            entity: 'order',
-            entityId: order.id,
-            details: { orderNumber: order.orderNumber, action: 'whatsapp_confirmation_sent' },
-        });
-
-        res.json(confirmation);
+        const orderId = parseInt(req.params.id);
+        const url = await whatsappService.buildConfirmationLink(orderId);
+        if (!url) return res.status(404).json({ error: 'Order tidak ditemukan' });
+        await orderService.markWhatsAppSent(orderId);
+        res.json({ url });
     } catch (error) { next(error); }
 });
 

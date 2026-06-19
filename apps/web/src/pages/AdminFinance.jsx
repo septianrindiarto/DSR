@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr } from "../lib/api";
+import { api, apiCache, swr, API_BASE } from "../lib/api";
+import { useToast } from '../components/Toast';
 import PeriodSelector from "../components/finance/PeriodSelector";
 import ImportModal from "../components/finance/ImportModal";
 import ExportModal from "../components/finance/ExportModal";
@@ -21,6 +22,7 @@ const TABS = [
 
 export default function AdminFinance() {
   const { t } = useLanguage();
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState("jurnal");
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -132,6 +134,7 @@ export default function AdminFinance() {
 
 // ─── Chart of Accounts Tab ────────────────────────────────────────────────────
 function TabChartOfAccounts() {
+  const toast = useToast();
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -174,7 +177,7 @@ function TabChartOfAccounts() {
   }
 
   async function handleSave() {
-    if (!form.code || !form.name) return alert("Kode dan nama wajib diisi.");
+    if (!form.code || !form.name) return toast.error("Kode dan nama wajib diisi.");
     setSaving(true);
     try {
       if (editId) await api.accounts.update(editId, form);
@@ -182,14 +185,14 @@ function TabChartOfAccounts() {
       apiCache.invalidate("accounts");
       setShowForm(false);
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   }
 
   async function handleDelete(a) {
     if (!confirm(`Hapus akun "${a.code} – ${a.name}"?`)) return;
     try { await api.accounts.delete(a.id); apiCache.invalidate("accounts"); load(); }
-    catch (e) { alert(e.message); }
+    catch (e) { toast.error(e.message); }
   }
 
   // Auto-set normalBalance when type changes
@@ -322,6 +325,7 @@ function TabChartOfAccounts() {
 const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 
 function TabLockedPeriods() {
+  const toast = useToast();
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -345,7 +349,7 @@ function TabLockedPeriods() {
       apiCache.invalidate("journal:periods");
       setShowForm(false);
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   }
 
@@ -356,7 +360,7 @@ function TabLockedPeriods() {
       await api.journal.unlockPeriod(p.id);
       apiCache.invalidate("journal:periods");
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
   }
 
   const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
@@ -477,6 +481,7 @@ function TabLockedPeriods() {
 
 // --- Dokumen Sub-section ---
 function DokumenSection({ docs, loading, onRefresh }) {
+  const toast = useToast();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", category: "keuangan_inti", period: "", fileUrl: "", fileType: "" });
 
@@ -488,16 +493,16 @@ function DokumenSection({ docs, loading, onRefresh }) {
   const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
 
   async function handleSave() {
-    try { await api.finance.create(form); apiCache.invalidate("finance"); setShowForm(false); onRefresh(); } catch (e) { alert(e.message); }
+    try { await api.finance.create(form); apiCache.invalidate("finance"); setShowForm(false); onRefresh(); } catch (e) { toast.error(e.message); }
   }
   async function handleDelete(id) {
     if (!confirm("Hapus dokumen?")) return;
-    try { await api.finance.delete(id); apiCache.invalidate("finance"); onRefresh(); } catch (e) { alert(e.message); }
+    try { await api.finance.delete(id); apiCache.invalidate("finance"); onRefresh(); } catch (e) { toast.error(e.message); }
   }
   async function handleUpload(e) {
     const file = e.target.files?.[0]; if (!file) return;
     const fd = new FormData(); fd.append("file", file);
-    try { const r = await api.finance.upload(fd); setForm(p => ({ ...p, fileUrl: r.url, fileType: file.name.split(".").pop().toUpperCase() })); } catch { alert("Upload gagal"); }
+    try { const r = await api.finance.upload(fd); setForm(p => ({ ...p, fileUrl: r.url, fileType: file.name.split(".").pop().toUpperCase() })); } catch { toast.error("Upload gagal"); }
   }
 
   if (loading) return <div className="py-12 text-center text-slate-400">Memuat dokumen...</div>;
@@ -527,7 +532,7 @@ function DokumenSection({ docs, loading, onRefresh }) {
                 <td className="px-4 py-2.5 text-xs">{d.period || "-"}</td>
                 <td className="px-4 py-2.5 text-xs">{fmtDate(d.createdAt)}</td>
                 <td className="px-4 py-2.5 text-right">
-                  {d.fileUrl && <a href={`http://localhost:5000${d.fileUrl}`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-primary mr-2"><span className="material-symbols-outlined text-[18px]">download</span></a>}
+                  {d.fileUrl && <a href={`${API_BASE}${d.fileUrl}`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-primary mr-2"><span className="material-symbols-outlined text-[18px]">download</span></a>}
                   <button onClick={() => handleDelete(d.id)} className="text-slate-400 hover:text-red-500 cursor-pointer"><span className="material-symbols-outlined text-[18px]">delete</span></button>
                 </td>
               </tr>

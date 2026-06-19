@@ -13,6 +13,85 @@ const router = Router();
 router.use(requireAuth, requireActiveUser);
 
 // ─────────────────────────────────────────────────────────────────────
+// SELF — the caller can view + edit their own profile
+// ─────────────────────────────────────────────────────────────────────
+
+// GET /api/users/me — the caller's own row + the linked customer (if any)
+router.get('/me', async (req, res, next) => {
+    try {
+        const { customers } = await import('../db/schema.js');
+        const [u] = await db.select({
+            id: user.id, name: user.name, email: user.email,
+            role: user.role, accountType: user.accountType,
+            organizationId: user.organizationId,
+            emailVerified: user.emailVerified,
+            createdAt: user.createdAt,
+        }).from(user).where(eq(user.id, req.user.id)).limit(1);
+        if (!u) return res.status(404).json({ error: 'User tidak ditemukan' });
+
+        // Pull phone + companyName + customerType from the linked customer.
+        const [cust] = await db.select({
+            id: customers.id, phone: customers.phone, whatsapp: customers.whatsapp,
+            companyName: customers.companyName, customerType: customers.customerType,
+        }).from(customers).where(eq(customers.userId, req.user.id)).limit(1);
+
+        // Org name (read-only) for client members.
+        let organizationName = null;
+        if (u.organizationId) {
+            const [org] = await db.select({ name: organizations.name })
+                .from(organizations).where(eq(organizations.id, u.organizationId)).limit(1);
+            organizationName = org?.name || null;
+        }
+
+        res.json({ ...u, customer: cust || null, organizationName });
+    } catch (err) { next(err); }
+});
+
+// PUT /api/users/me — update the caller's editable fields. Email changes are
+// rejected here because they require re-verification; that's a separate flow.
+router.put('/me', async (req, res, next) => {
+    try {
+        const { customers } = await import('../db/schema.js');
+        const { name, phone, email: emailIgnored } = req.body || {};
+        if (emailIgnored && emailIgnored !== req.user.email) {
+            return res.status(400).json({
+                error: 'Mengubah email memerlukan verifikasi ulang. Hubungi admin atau gunakan halaman reset email.',
+            });
+        }
+
+        // Update user.name if provided.
+        if (typeof name === 'string' && name.trim().length > 0) {
+            await db.update(user)
+                .set({ name: name.trim(), updatedAt: new Date() })
+                .where(eq(user.id, req.user.id));
+        }
+
+        // Update phone on the linked customer row (creating one if missing —
+        // older accounts may not have a customer row).
+        if (typeof phone === 'string' && phone.trim().length > 0) {
+            const [existing] = await db.select({ id: customers.id })
+                .from(customers).where(eq(customers.userId, req.user.id)).limit(1);
+            if (existing) {
+                await db.update(customers)
+                    .set({ phone: phone.trim(), whatsapp: phone.trim() })
+                    .where(eq(customers.id, existing.id));
+            } else {
+                await db.insert(customers).values({
+                    userId: req.user.id,
+                    name: name || req.user.name,
+                    email: req.user.email,
+                    phone: phone.trim(),
+                    whatsapp: phone.trim(),
+                    customerType: 'private',
+                });
+            }
+        }
+
+        res.json({ ok: true, message: 'Profil tersimpan.' });
+    } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // ORGANIZATIONS CRUD (superadmin only)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -220,7 +299,6 @@ router.put('/:id', requireAdmin, async (req, res, next) => {
         if (req.body.organizationId !== undefined) patch.organizationId = req.body.organizationId ? parseInt(req.body.organizationId) : null;
         if (req.body.isActive !== undefined) patch.isActive = req.body.isActive;
         if (req.body.isDemo !== undefined) patch.isDemo = req.body.isDemo;
-        // Auto-set isDemo when role changes to demo
         if (patch.role === 'demo') patch.isDemo = true;
         if (patch.role && patch.role !== 'demo') patch.isDemo = false;
 
@@ -233,9 +311,6 @@ router.put('/:id', requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-/**
- * POST /api/users/:id/reset-password — superadmin only
- */
 router.post('/:id/reset-password', requireSuperAdmin, async (req, res, next) => {
     try {
         const { password } = req.body;
@@ -248,11 +323,8 @@ router.post('/:id/reset-password', requireSuperAdmin, async (req, res, next) => 
 
         const hashed = await hashPassword(password);
         const now = new Date();
-
-        // Update existing credential record, or insert if none exists
         const existing = await db.select({ id: account.id }).from(account)
             .where(and(eq(account.userId, targetId), eq(account.providerId, 'credential')));
-
         if (existing.length > 0) {
             await db.update(account).set({ password: hashed, updatedAt: now })
                 .where(and(eq(account.userId, targetId), eq(account.providerId, 'credential')));
@@ -267,24 +339,70 @@ router.post('/:id/reset-password', requireSuperAdmin, async (req, res, next) => 
                 updatedAt: now,
             });
         }
-
         res.json({ message: 'Password berhasil direset.' });
     } catch (error) { next(error); }
 });
 
-/**
- * DELETE /api/users/:id — superadmin only, cannot delete self
- */
-router.delete('/:id', requireSuperAdmin, async (req, res, next) => {
+// DELETE /api/users/:id - soft-deactivate a user.
+//
+// Task 50: admin-only action in Manajemen Pengguna. Previously gated to
+// requireSuperAdmin; relaxed so an organization admin can deactivate users
+// inside their own org. Hard-deletion is avoided because user.id is
+// referenced by many tables (orders.created_by, orders.approved_by,
+// customers.user_id, etc.) with mixed cascade rules. Soft-deactivation:
+//   - sets isActive=false (already gated by requireActiveUser middleware,
+//     so the deactivated user is locked out of every API call)
+//   - deletes any active session rows for the user so they are immediately
+//     logged out across devices
+//   - returns 200 with a friendly message
+//
+// Guards:
+//   - self-delete blocked
+//   - non-superadmin callers may only delete users in their OWN org
+//   - non-superadmin callers may not delete a superadmin
+//   - 404 if the target id is unknown
+router.delete('/:id', requireAdmin, async (req, res, next) => {
     try {
         const targetId = req.params.id;
         if (targetId === req.user.id) {
             return res.status(400).json({ error: 'Tidak dapat menghapus akun sendiri.' });
         }
-        // Cascade sessions / accounts handled by DB FK
-        const rows = await db.delete(user).where(eq(user.id, targetId)).returning({ id: user.id, name: user.name });
-        if (!rows[0]) return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
-        res.json({ message: `Akun ${rows[0].name} dihapus.` });
+
+        const [target] = await db.select({
+            id: user.id, name: user.name, role: user.role,
+            organizationId: user.organizationId, isActive: user.isActive,
+        }).from(user).where(eq(user.id, targetId));
+        if (!target) return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+
+        if (req.user.role !== 'superadmin') {
+            if (!req.user.organizationId || target.organizationId !== req.user.organizationId) {
+                return res.status(403).json({ error: 'Akses ditolak. Hanya admin di organisasi yang sama yang dapat menghapus akun ini.' });
+            }
+            if (target.role === 'superadmin') {
+                return res.status(403).json({ error: 'Admin tidak dapat menghapus akun superadmin.' });
+            }
+        }
+
+        if (target.isActive === false) {
+            return res.status(200).json({ message: `Akun ${target.name} sudah nonaktif.` });
+        }
+
+        await db.update(user)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(user.id, targetId));
+
+        try {
+            const { session } = await import('../db/schema.js');
+            await db.delete(session).where(eq(session.userId, targetId));
+        } catch (sessionErr) {
+            console.warn('[users.delete] failed to clear sessions for', targetId, sessionErr?.message);
+        }
+
+        res.json({
+            message: `Akun ${target.name} dinonaktifkan. Pengguna ini tidak dapat lagi login.`,
+            id: target.id,
+            isActive: false,
+        });
     } catch (error) { next(error); }
 });
 

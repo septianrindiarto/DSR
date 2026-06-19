@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr } from "../lib/api";
+import { api, apiCache, swr, API_BASE } from "../lib/api";
+import { useToast } from '../components/Toast';
 import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
@@ -16,7 +17,7 @@ const statusColors = {
 // Resolve `/uploads/...` paths to a fully-qualified URL so anchor tags work
 // even when the web app runs on a different origin than the API (dev: web on
 // :5173, API on :5000).
-const API_ORIGIN = "http://localhost:5000";
+const API_ORIGIN = API_BASE;
 const docHref = (url) => (url ? (url.startsWith("http") ? url : `${API_ORIGIN}${url}`) : null);
 
 const emptyForm = {
@@ -28,6 +29,7 @@ const emptyFiles = { licenseDoc: null, idCard: null, photo: null };
 
 export default function AdminDrivers() {
   const { t } = useLanguage();
+  const toast = useToast();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("createdAt");
@@ -141,7 +143,7 @@ export default function AdminDrivers() {
       apiCache.invalidate("drivers:");
       loadDrivers();
     } catch (error) {
-      alert(error.message);
+      toast.error(error.message);
     } finally {
       setSaving(false);
     }
@@ -154,7 +156,7 @@ export default function AdminDrivers() {
       apiCache.invalidate("drivers:");
       loadDrivers();
     } catch (error) {
-      alert(error.message);
+      toast.error(error.message);
     }
   }
 
@@ -163,7 +165,7 @@ export default function AdminDrivers() {
     try {
       const data = await api.drivers.exportData();
       await exportAs(data, format, "driver-export");
-    } catch (error) { alert("Export gagal: " + error.message); }
+    } catch (error) { toast.error(t('exportFailed') + ': ' + error.message); }
   }
 
   // ── Field order for headerless import ──────────────────────────────────
@@ -602,7 +604,7 @@ export default function AdminDrivers() {
 function DocField({ label, icon, field, file, existingUrl, onPick }) {
   const inputId = `doc-${field}`;
   const existingHref = existingUrl
-    ? (existingUrl.startsWith("http") ? existingUrl : `http://localhost:5000${existingUrl}`)
+    ? (existingUrl.startsWith("http") ? existingUrl : `${API_BASE}${existingUrl}`)
     : null;
   return (
     <div className="border border-slate-200 rounded-lg p-3">

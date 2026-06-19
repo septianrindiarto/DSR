@@ -80,6 +80,21 @@ router.get('/:id', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
+// Drizzle timestamp columns call `.toISOString()` on the value during INSERT/UPDATE,
+// so empty strings (which the date <input> sends when the user leaves the field
+// blank) blow up with "value.toISOString is not a function". Normalize to a real
+// Date or explicit null.
+function normalizeLicenseExpiry(data) {
+    if (!('licenseExpiry' in data)) return;
+    const v = data.licenseExpiry;
+    if (v === '' || v === null || v === undefined) {
+        data.licenseExpiry = null;
+        return;
+    }
+    const d = v instanceof Date ? v : new Date(v);
+    data.licenseExpiry = isNaN(d.getTime()) ? null : d;
+}
+
 router.post('/', requireAuth, requireAdmin, validate(driverSchema), activityLogger('create', 'driver'), async (req, res, next) => {
     try {
         const data = {
@@ -88,7 +103,7 @@ router.post('/', requireAuth, requireAdmin, validate(driverSchema), activityLogg
             createdBy: req.user.id,
             isDemo: req.user.isDemo || false,
         };
-        if (data.licenseExpiry) data.licenseExpiry = new Date(data.licenseExpiry);
+        normalizeLicenseExpiry(data);
         const driver = await driverService.create(data);
         res.status(201).json(driver);
     } catch (error) { next(error); }
@@ -97,7 +112,7 @@ router.post('/', requireAuth, requireAdmin, validate(driverSchema), activityLogg
 router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'driver'), async (req, res, next) => {
     try {
         const data = { ...req.body };
-        if (data.licenseExpiry) data.licenseExpiry = new Date(data.licenseExpiry);
+        normalizeLicenseExpiry(data);
         const driver = await driverService.update(parseInt(req.params.id), data);
         if (!driver) return res.status(404).json({ error: 'Driver tidak ditemukan' });
         res.json(driver);
@@ -138,7 +153,11 @@ router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 
                     name,
                     phone,
                     licenseNumber: item.licenseNumber || item.sim || null,
-                    licenseExpiry: item.licenseExpiry ? new Date(item.licenseExpiry) : null,
+                    licenseExpiry: (() => {
+                        if (!item.licenseExpiry) return null;
+                        const d = new Date(item.licenseExpiry);
+                        return isNaN(d.getTime()) ? null : d;
+                    })(),
                     status: item.status || 'active',
                     address: item.address || item.alamat || null,
                     notes: item.notes || item.catatan || null,

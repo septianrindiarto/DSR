@@ -89,11 +89,14 @@ export const orderService = {
         const conditions = [];
         if (status && status !== 'all') conditions.push(eq(orders.status, status));
 
-        // Company-level isolation
+        // Data isolation — org for agency/company admins, customer.user_id for
+        // plain clients. `ownerUserId: customers.userId` makes the scope helper
+        // emit  WHERE customers.user_id = req.user.id  for client role.
         const scopeConds = buildScopeConditions(scopeUser, {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            ownerUserId: customers.userId,
         });
         conditions.push(...scopeConds);
 
@@ -183,6 +186,7 @@ export const orderService = {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            ownerUserId: customers.userId,
         });
 
         let query = db

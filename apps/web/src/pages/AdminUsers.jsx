@@ -350,6 +350,24 @@ export default function AdminUsers() {
     const { user: currentUser } = useAuth();
     const isSuperAdmin = currentUser?.role === 'superadmin';
 
+    // Task 50 - delete button visibility.
+    // A row can be deleted when:
+    //   - it is not the caller themselves, AND
+    //   - the caller is superadmin, OR
+    //   - the caller is an admin in the same organization as the target row
+    //     and the target is NOT a superadmin
+    // The backend re-enforces this exact rule (DELETE /api/users/:id), so the
+    // client check just hides the button from users that would get a 403.
+    const canDeleteUser = (u) => {
+        if (!u || !currentUser) return false;
+        if (u.id === currentUser.id) return false;
+        if (isSuperAdmin) return true;
+        if (currentUser.role !== 'admin') return false;
+        if (!currentUser.organizationId) return false;
+        if (u.role === 'superadmin') return false;
+        return u.organizationId === currentUser.organizationId;
+    };
+
     const [tab, setTab] = useState('users'); // 'users' | 'orgs'
     const [users, setUsers] = useState([]);
     const [orgs, setOrgs] = useState([]);
@@ -572,11 +590,11 @@ export default function AdminUsers() {
                                                     >
                                                         <span className="material-symbols-outlined text-[16px]">edit</span>
                                                     </button>
-                                                    {isSuperAdmin && u.id !== currentUser?.id && (
+                                                    {canDeleteUser(u) && (
                                                         <button
                                                             onClick={() => setConfirmDelete({ type: 'user', id: u.id, name: u.name })}
                                                             className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                                                            title="Hapus"
+                                                            title="Nonaktifkan akun (soft delete)"
                                                         >
                                                             <span className="material-symbols-outlined text-[16px]">delete</span>
                                                         </button>
@@ -691,16 +709,25 @@ export default function AdminUsers() {
                                 <span className="material-symbols-outlined text-red-500 text-[20px]">warning</span>
                             </div>
                             <div>
-                                <h3 className="text-slate-900 font-semibold text-sm">Konfirmasi Hapus</h3>
-                                <p className="text-slate-500 text-xs mt-0.5">Tindakan ini tidak dapat dibatalkan</p>
+                                <h3 className="text-slate-900 font-semibold text-sm">
+                                    {confirmDelete.type === 'user' ? 'Nonaktifkan Akun' : 'Konfirmasi Hapus'}
+                                </h3>
+                                <p className="text-slate-500 text-xs mt-0.5">
+                                    {confirmDelete.type === 'user'
+                                        ? 'Pengguna ini akan dikeluarkan dan tidak dapat login lagi.'
+                                        : 'Tindakan ini tidak dapat dibatalkan'}
+                                </p>
                             </div>
                         </div>
                         <p className="text-slate-700 text-sm mb-5">
-                            Hapus <strong className="text-slate-900">{confirmDelete.name}</strong>?
+                            {confirmDelete.type === 'user' ? 'Nonaktifkan' : 'Hapus'}{' '}
+                            <strong className="text-slate-900">{confirmDelete.name}</strong>?
                         </p>
                         <div className="flex gap-3">
                             <button onClick={() => setConfirmDelete(null)} className="flex-1 px-4 py-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm transition-colors">Batal</button>
-                            <button onClick={handleDelete} className="flex-1 px-4 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors">Hapus</button>
+                            <button onClick={handleDelete} className="flex-1 px-4 py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors">
+                                {confirmDelete.type === 'user' ? 'Nonaktifkan' : 'Hapus'}
+                            </button>
                         </div>
                     </div>
                 </div>

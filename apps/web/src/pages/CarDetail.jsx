@@ -2,12 +2,11 @@ import { useState, useMemo, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
-import { api } from "../lib/api";
-
-const API_BASE = 'http://localhost:5000';
-const carImgSrc = (url) => url?.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+import { api, carImgSrc } from "../lib/api";
+import { useToast } from "../components/Toast";
 
 export default function CarDetail() {
+  const toast = useToast();
   const { id } = useParams();
 
   const [car, setCar] = useState(null);
@@ -110,7 +109,7 @@ export default function CarDetail() {
       setSubmitResult(result);
       setShowSuccess(true);
     } catch (err) {
-      alert(err.message || 'Gagal mengirim pesanan. Silakan coba lagi.');
+      toast.error(err.message || 'Gagal mengirim pesanan. Silakan coba lagi.');
     } finally {
       setSubmitting(false);
     }

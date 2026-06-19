@@ -1,4 +1,16 @@
-const API_BASE = 'http://localhost:5000';
+// Canonical API base URL. Audit C-03: previously declared in 5 separate files
+// (CarCard, AdminFleet, AdminSchedule, CarDetail + here). Now exported as the
+// single source of truth. Override via VITE_API_BASE in .env for non-dev
+// deployments.
+export const API_BASE =
+    (import.meta?.env?.VITE_API_BASE) || 'http://localhost:5000';
+
+// Audit L-02: shared image-URL helper. Resolves a relative /uploads path to
+// the API host without leaking the localhost literal into every component.
+export function carImgSrc(url) {
+    if (!url) return url;
+    return url.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+}
 
 // ─── In-memory stale-while-revalidate cache ─────────────────────────────
 // Survives client-side navigation (module is shared across React tree). On
@@ -50,34 +62,92 @@ const errorMessageMap = {
     'Invalid password': 'Password salah. Silakan coba lagi.',
     'User not found': 'Akun tidak ditemukan.',
     'Password is too short': 'Password terlalu pendek. Minimal 6 karakter.',
+    // Better Auth emits these when requireEmailVerification = true and the
+    // user hasn't activated yet. Surface the friendly Indonesian gate.
+    'Email not verified': 'Email Anda belum diverifikasi. Cek inbox untuk link aktivasi.',
+    'Email verification required': 'Email Anda belum diverifikasi. Cek inbox untuk link aktivasi.',
+    'Please verify your email': 'Email Anda belum diverifikasi. Cek inbox untuk link aktivasi.',
+    // Generic registration failure — usually means the email is already taken.
+    'Failed to create user': 'Pendaftaran gagal. Kemungkinan email sudah dipakai — coba masuk atau pakai email lain.',
 };
+
+// Audit C-04. Default request timeout. Long-running endpoints (file
+// uploads, bulk imports) can pass a larger opts.timeout per call.
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * Centralized API client with auth cookie support.
+ *
+ * Adds an AbortController with a configurable timeout so a stalled backend
+ * does not leave the UI hanging on a spinner indefinitely. Aborted requests
+ * surface a friendly Indonesian message rather than a raw DOMException.
  */
 async function request(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
+    const {
+        timeout = DEFAULT_TIMEOUT_MS,
+        signal: externalSignal,
+        ...restOptions
+    } = options;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+
+    // If the caller supplied their own AbortSignal (e.g. for cancel-on-unmount),
+    // chain it so either source can abort the same fetch.
+    if (externalSignal) {
+        if (externalSignal.aborted) controller.abort();
+        else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
     const config = {
         credentials: 'include',
         headers: {
             'Content-Type': 'application/json',
-            ...options.headers,
+            ...restOptions.headers,
         },
-        ...options,
+        ...restOptions,
+        signal: controller.signal,
     };
 
-    // Remove Content-Type for FormData (let browser set it)
     if (options.body instanceof FormData) {
         delete config.headers['Content-Type'];
     }
 
-    const response = await fetch(url, config);
+    let response;
+    try {
+        response = await fetch(url, config);
+    } catch (err) {
+        clearTimeout(timer);
+        if (err?.name === 'AbortError') {
+            const aborted = externalSignal?.aborted;
+            throw new Error(aborted
+                ? 'Permintaan dibatalkan.'
+                : 'Permintaan terlalu lama. Periksa koneksi Anda dan coba lagi.');
+        }
+        throw err;
+    }
+    clearTimeout(timer);
 
     if (!response.ok) {
         const errBody = await response.json().catch(() => ({ error: response.statusText }));
-        // Better Auth returns { message, code } — map to Indonesian
         const rawMsg = errBody.message || errBody.error || `HTTP ${response.status}`;
         const msg = errorMessageMap[rawMsg] || rawMsg;
+
+        // Audit M-05: 401 means the session expired or was invalidated. Fire
+        // a global event so AuthContext can clear state and redirect the
+        // user to login with a banner, instead of every page showing a raw
+        // 'Unauthorized' alert in isolation. Endpoints that legitimately
+        // expect 401 in their flow (e.g. /api/auth/get-session probe on
+        // mount) can opt out by passing skipAuthInterceptor in options.
+        if (response.status === 401 && !options.skipAuthInterceptor) {
+            try {
+                window.dispatchEvent(new CustomEvent('auth:expired', {
+                    detail: { endpoint, rawMsg },
+                }));
+            } catch (_) { /* SSR / Node guard */ }
+        }
+
         throw new Error(msg);
     }
 
@@ -266,10 +336,18 @@ export const api = {
 
     // Auth
     auth: {
-        signUp: (data) => api.post('/api/auth/sign-up/email', data),
+        // signUp goes through OUR custom endpoint so phone/customerType/
+        // companyName/accountType are captured + a customers row is created.
+        signUp: (data) => api.post('/api/auth/register-extended', data),
         signIn: (data) => api.post('/api/auth/sign-in/email', data),
         signOut: () => api.post('/api/auth/sign-out', {}),
-        getSession: () => api.get('/api/auth/get-session'),
+        // skipAuthInterceptor: this probe runs on every page load to detect
+        // an already-logged-in user. A 401 here just means "not logged in",
+        // not "session expired", so it must NOT fire the global banner.
+        getSession: () => request('/api/auth/get-session', { skipAuthInterceptor: true }),
+        // Email verification — token comes from the activation link.
+        verifyEmail: (token) => api.get(`/api/auth/verify-email?token=${encodeURIComponent(token)}`),
+        sendVerification: (email) => api.post('/api/auth/send-verification-email', { email }),
     },
 
     // User Management
@@ -279,6 +357,35 @@ export const api = {
         update: (id, data) => api.put(`/api/users/${id}`, data),
         delete: (id) => api.delete(`/api/users/${id}`),
         resetPassword: (id, password) => api.post(`/api/users/${id}/reset-password`, { password }),
+    },
+
+    // Self profile (Phase 4B)
+    me: {
+        get: () => api.get('/api/users/me'),
+        update: (data) => api.put('/api/users/me', data),
+    },
+
+    // Org invite codes (Phase 4A) + company info (Phase 4B)
+    myOrg: {
+        getInviteCode: () => api.get('/api/orgs/my-invite-code'),
+        resendInviteCode: () => api.post('/api/orgs/my-invite-code/resend', {}),
+        rotateInviteCode: () => api.post('/api/orgs/my-invite-code/rotate', {}),
+        getInfo: () => api.get('/api/orgs/my-info'),
+        updateInfo: (data) => api.put('/api/orgs/my-info', data),
+    },
+
+    // Access Requests (Phase 3)
+    accessRequests: {
+        create: (featureKey, note) => api.post('/api/access-requests', { featureKey, note }),
+        listPending: () => api.get('/api/access-requests/pending'),
+        approve: (id) => api.put(`/api/access-requests/${id}/approve`, {}),
+        reject: (id) => api.put(`/api/access-requests/${id}/reject`, {}),
+    },
+
+    // Notification channels (admin-only). Telegram is the first wired up.
+    notifications: {
+        telegramStatus: () => api.get('/api/notifications/telegram/status'),
+        telegramTest: () => api.post('/api/notifications/telegram/test', {}),
     },
 
     // Organizations

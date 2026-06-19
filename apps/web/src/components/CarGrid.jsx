@@ -1,28 +1,41 @@
 import { useState, useEffect } from "react";
 import CarCard from "./CarCard";
-import { api } from "../lib/api";
+import { api, apiCache, swr } from "../lib/api";
+import { useLanguage } from "../context/LanguageContext";
+
+// Audit M-R4: CarGrid now flows through the same stale-while-revalidate
+// helper that powers every authenticated page. First paint is hydrated
+// from cache (if any), and a background refresh fills in the latest
+// fleet without blocking the UI.
 
 export default function CarGrid() {
-    const [cars, setCars] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const { t } = useLanguage();
+    const CACHE_KEY = "cars:public";
+    const [cars, setCars] = useState(() => apiCache.get(CACHE_KEY)?.data || []);
+    const [loading, setLoading] = useState(() => !apiCache.has(CACHE_KEY));
     const [error, setError] = useState(null);
     const [filter, setFilter] = useState("all");
 
     useEffect(() => {
-        api.cars.listPublic()
+        let active = true;
+        swr(CACHE_KEY, () => api.cars.listPublic())
             .then((data) => {
-                setCars(data);
+                if (!active) return;
+                setCars(Array.isArray(data) ? data : []);
                 setLoading(false);
+                setError(null);
             })
             .catch((err) => {
+                if (!active) return;
                 console.error("Error fetching cars:", err);
                 setError(err.message);
                 setLoading(false);
             });
+        return () => { active = false; };
     }, []);
 
     const categories = ["all", ...new Set(cars.map(c => c.category).filter(Boolean))];
-    const categoryLabels = { all: "Semua", economy: "Ekonomi", standard: "Standar", premium: "Premium", luxury: "Mewah" };
+    const categoryLabels = { all: t('allCategories'), economy: t('economy'), standard: t('standard'), premium: t('premium'), luxury: t('luxury') };
     const filteredCars = filter === "all" ? cars : cars.filter(c => c.category === filter);
 
     if (loading) {
@@ -31,7 +44,7 @@ export default function CarGrid() {
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
                     <div className="flex flex-col items-center gap-4">
                         <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin"></div>
-                        <p className="text-text-sub text-sm">Memuat data mobil...</p>
+                        <p className="text-text-sub text-sm">{t('loadingCars')}</p>
                     </div>
                 </div>
             </section>
@@ -42,9 +55,9 @@ export default function CarGrid() {
         return (
             <section className="py-16 bg-background-light">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-                    <p className="text-red-600">Gagal memuat data: {error}</p>
+                    <p className="text-red-600">{t('failedToLoadData').replace('{error}', error)}</p>
                     <button onClick={() => window.location.reload()} className="mt-4 text-primary font-medium hover:underline cursor-pointer">
-                        Coba Lagi
+                        {t('tryAgain')}
                     </button>
                 </div>
             </section>
@@ -57,10 +70,10 @@ export default function CarGrid() {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-4">
                     <div>
                         <h2 className="text-3xl font-bold text-text-main mb-2">
-                            Mobil Tersedia
+                            {t('availableCars')}
                         </h2>
                         <p className="text-text-sub">
-                            Pilihan armada terbaik untuk kebutuhan Anda
+                            {t('bestFleetChoice')}
                         </p>
                     </div>
                     {/* Category Filter */}
@@ -88,7 +101,7 @@ export default function CarGrid() {
                 {filteredCars.length === 0 && (
                     <div className="text-center py-12 text-slate-400">
                         <span className="material-symbols-outlined text-4xl mb-2 block">directions_car</span>
-                        <p>Tidak ada mobil untuk kategori ini</p>
+                        <p>{t('noCarsInCategory')}</p>
                     </div>
                 )}
             </div>

@@ -1,15 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr } from "../lib/api";
+import { api, apiCache, swr, carImgSrc } from "../lib/api";
 import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs } from "../lib/dataFormats";
-
-const API_BASE = 'http://localhost:5000';
-
-const carImgSrc = (url) => url?.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+import { useToast } from '../components/Toast';
 
 const statusColors = {
   available: "bg-green-100 text-green-700",
@@ -29,6 +26,7 @@ const emptyForm = {
 
 export default function AdminFleet() {
   const { t } = useLanguage();
+  const toast = useToast();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("createdAt");
@@ -107,7 +105,7 @@ export default function AdminFleet() {
       gallery[0] || '',
       gallery[1] || '',
     ];
-    setImagePreviews(previews.map(p => p.startsWith('/uploads') ? `${API_BASE}${p}` : p));
+    setImagePreviews(previews.map(p => p.startsWith('/uploads') ? carImgSrc(p) : p));
     setEditingId(car.id);
     setShowModal(true);
   }
@@ -141,7 +139,7 @@ export default function AdminFleet() {
       }
 
       if (!editingId && !imageUrl) {
-        alert('Minimal 3 gambar wajib diunggah (tampak depan, samping, belakang)');
+        toast.error(t('minImagesRequired'));
         setSaving(false);
         return;
       }
@@ -161,7 +159,7 @@ export default function AdminFleet() {
       apiCache.invalidate("cars:");
       loadCars();
     } catch (error) {
-      alert(error.message);
+      toast.error(error.message);
     } finally {
       setSaving(false);
     }
@@ -174,7 +172,7 @@ export default function AdminFleet() {
       apiCache.invalidate("cars:");
       loadCars();
     } catch (error) {
-      alert(error.message);
+      toast.error(error.message);
     }
   }
 
@@ -187,7 +185,7 @@ export default function AdminFleet() {
       const data = await api.cars.exportData();
       await exportAs(data, format, "fleet-export");
     } catch (error) {
-      alert("Export gagal: " + error.message);
+      toast.error(t('exportFailed') + ': ' + error.message);
     }
   }
 
@@ -239,7 +237,7 @@ export default function AdminFleet() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{t("fleet")}</h1>
-          <p className="text-slate-500 text-sm mt-1">Kelola armada kendaraan</p>
+          <p className="text-slate-500 text-sm mt-1">{t('manageFleet')}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -297,12 +295,12 @@ export default function AdminFleet() {
         <div className="relative flex-1">
           <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[20px]">search</span>
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari di semua kolom (nama, merek, plat, kategori, transmisi, harga, dll.)…"
+            placeholder={t('searchAllColumns')}
             className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
           className="px-4 py-2.5 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">
-          <option value="">Semua Status</option>
+          <option value="">{t('allStatus')}</option>
           <option value="available">{t("available")}</option>
           <option value="rented">{t("rented")}</option>
           <option value="maintenance">{t("inMaintenance")}</option>
@@ -414,7 +412,7 @@ export default function AdminFleet() {
                 <span className={`absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[car.status]}`}>{t(car.status)}</span>
               </div>
               <div className="p-4">
-                <p className="text-xs text-slate-400 font-medium uppercase">{car.brand} • {car.type} • {car.category} • {car.year} • {car.license_plate}</p>
+                <p className="text-xs text-slate-400 font-medium uppercase">{car.brand} • {car.type} • {car.category} • {car.year} • {car.licensePlate}</p>
                 <h3 className="text-lg font-bold text-slate-900 mt-1">{car.name}</h3>
                 <div className="flex items-center justify-between mt-3">
                   <span className="text-primary font-bold">{formatPrice(car.price)}<span className="text-xs text-slate-400 font-normal">/hari</span></span>
@@ -437,7 +435,7 @@ export default function AdminFleet() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowModal(false)}>
           <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-5 border-b border-slate-100">
-              <h2 className="text-lg font-bold text-slate-900">{editingId ? "Edit Mobil" : t("addCar")}</h2>
+              <h2 className="text-lg font-bold text-slate-900">{editingId ? t('editCar') : t("addCar")}</h2>
               <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer"><span className="material-symbols-outlined">close</span></button>
             </div>
             <form onSubmit={handleSave} className="p-5 space-y-4">
@@ -460,7 +458,7 @@ export default function AdminFleet() {
                 <FormField label={t("licensePlate")} value={form.licensePlate} onChange={v => setForm({...form, licensePlate: v})} />
                 <FormField label={`${t("color")}`} value={form.color} onChange={v => setForm({...form, color: v})} />
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-2">Foto Kendaraan * <span className="text-xs text-slate-400">(min. 3 gambar)</span></label>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">{t('vehiclePhotos')} * <span className="text-xs text-slate-400">({t('minImages')})</span></label>
                   <div className="grid grid-cols-3 gap-3">
                     {IMAGE_LABELS.map((lbl, idx) => (
                       <div key={lbl} className="relative">
@@ -512,7 +510,7 @@ export default function AdminFleet() {
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">{t("cancel")}</button>
-                <button type="submit" disabled={saving} className="flex-1 py-2.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-dark cursor-pointer disabled:opacity-60">{saving ? "Menyimpan..." : t("save")}</button>
+                <button type="submit" disabled={saving} className="flex-1 py-2.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-dark cursor-pointer disabled:opacity-60">{saving ? t('saving') : t("save")}</button>
               </div>
             </form>
           </div>

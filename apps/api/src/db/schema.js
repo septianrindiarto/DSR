@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, serial, boolean, timestamp, decimal, json, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, text, varchar, integer, serial, boolean, timestamp, decimal, json, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 
 // ─── Enums ───────────────────────────────────────────────────────────
 export const carStatusEnum = pgEnum('car_status', ['available', 'rented', 'maintenance']);
@@ -13,9 +13,10 @@ export const driverStatusEnum = pgEnum('driver_status', ['active', 'inactive', '
 export const maintenanceStatusEnum = pgEnum('maintenance_status', ['scheduled', 'in_progress', 'completed']);
 export const maintenanceTypeEnum = pgEnum('maintenance_type', ['routine', 'repair', 'inspection']);
 export const activityActionEnum = pgEnum('activity_action', ['create', 'update', 'delete', 'login', 'logout', 'approve', 'reject', 'confirm']);
-export const userRoleEnum = pgEnum('user_role', ['admin', 'superadmin', 'agent', 'demo']);
+export const userRoleEnum = pgEnum('user_role', ['admin', 'superadmin', 'agent', 'demo', 'client', 'client_admin']);
 export const finCategoryEnum = pgEnum('fin_category', ['keuangan_inti', 'perpajakan', 'aset_armada', 'kepatuhan', 'operasional', 'payroll']);
 export const finStatusEnum = pgEnum('fin_status', ['draft', 'submitted', 'final', 'archived']);
+export const accessRequestStatusEnum = pgEnum('access_request_status', ['pending', 'approved', 'rejected']);
 
 // ─── Organizations (tenant companies / partners) ─────────────────────
 // Each partner company that gets an account on the platform is one row here.
@@ -23,8 +24,34 @@ export const finStatusEnum = pgEnum('fin_status', ['draft', 'submitted', 'final'
 export const organizations = pgTable('organizations', {
     id: serial('id').primaryKey(),
     name: varchar('name', { length: 255 }).notNull().unique(),
+    // Lowercased + trimmed name used for soft duplicate detection. Filled by
+    // the registration endpoint when a new org is created.
+    nameNormalized: text('name_normalized'),
     slug: varchar('slug', { length: 100 }).unique(),
     isActive: boolean('is_active').notNull().default(true),
+    // Phase 4A — one admin per org. Joined via FK (text → user.id).
+    // The DB enforces uniqueness with a partial UNIQUE INDEX (see migration);
+    // Drizzle treats it as a regular nullable text column.
+    adminUserId: text('admin_user_id'),
+    // 8-char alphanumeric code generated when the org is created. Subsequent
+    // team members register by entering this code instead of typing the
+    // company name (avoids fuzzy-match / duplicate-org problems).
+    inviteCode: varchar('invite_code', { length: 12 }),
+    // Phase 4B — per-org company info that used to be hardcoded in
+    // AdminSettings.jsx. Appears on invoices, receipts, surat jalan, etc.
+    address: text('address'),
+    phone1: varchar('phone1', { length: 50 }),
+    phone2: varchar('phone2', { length: 50 }),
+    email: varchar('email', { length: 255 }),
+    signatory: varchar('signatory', { length: 255 }),
+    brand: varchar('brand', { length: 100 }),
+    npwp: varchar('npwp', { length: 30 }),
+    notes: text('notes'),
+    // Phase 4C-1 — display_id is the human-readable org identifier
+    // (e.g. "DRC_20260614"). UNIQUE; generated at registration. parent_agency_id
+    // links a client org to its owning agency (NULL for agency orgs themselves).
+    displayId: varchar('display_id', { length: 20 }),
+    parentAgencyId: integer('parent_agency_id'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -37,10 +64,22 @@ export const user = pgTable('user', {
     emailVerified: boolean('email_verified').notNull().default(false),
     image: text('image'),
     role: userRoleEnum('role').default('admin'),
+    // Phase 4A — account_type is the "flag" dimension (agency vs client),
+    // role is now just admin/user/superadmin/demo. Backend permission checks
+    // gate on both.
+    accountType: varchar('account_type', { length: 20 }).default('client'),
     // Multi-tenancy extensions
     organizationId: integer('organization_id').references(() => organizations.id, { onDelete: 'set null' }),
     isActive: boolean('is_active').notNull().default(true),
     isDemo: boolean('is_demo').notNull().default(false),
+    // Per-user permission overrides — e.g. {"view_all_orders": true} grants a
+    // plain client access to every order. Filled by admins via the access
+    // request flow (Phase 3). Default {} means "no overrides".
+    // NB: column is declared without .notNull() in Drizzle so the Better Auth
+    // adapter doesn't have to supply a value on INSERT. The DB-side migration
+    // (drizzle/client_scope_migration.sql) enforces NOT NULL DEFAULT '{}'::jsonb,
+    // which fills in '{}' automatically.
+    permissions: jsonb('permissions').default({}),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
@@ -112,6 +151,10 @@ export const cars = pgTable('cars', {
 
 export const customers = pgTable('customers', {
     id: serial('id').primaryKey(),
+    // Links this customer record back to the logged-in user that owns it.
+    // Populated when a client books their own order. NULL for legacy customers
+    // imported via Rekap — those rows are not "owned" by any single user.
+    userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
     name: varchar('name', { length: 255 }).notNull(),
     companyName: varchar('company_name', { length: 255 }),
     email: varchar('email', { length: 255 }).unique(),
@@ -336,4 +379,19 @@ export const lockedPeriods = pgTable('locked_periods', {
     year: integer('year').notNull(),
     month: integer('month'),                                  // NULL = entire year locked
     lockedBy: text('locked_by').references(() => user.id),
+    lockedAt: timestamp('locked_at').defaultNow(),
+});
+
+// ─── Access Requests (Phase 3) ──────────────────────────────────────
+// A user requests access to a feature their role doesn't grant.
+// Admins approve/reject; on approve we flip the user.permissions JSON.
+export const accessRequests = pgTable('access_requests', {
+    id: serial('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+    featureKey: varchar('feature_key', { length: 50 }).notNull(),
+    status: accessRequestStatusEnum('status').notNull().default('pending'),
+    note: text('note'),
+    requestedAt: timestamp('requested_at').notNull().defaultNow(),
+    decidedBy: text('decided_by').references(() => user.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at'),
 });

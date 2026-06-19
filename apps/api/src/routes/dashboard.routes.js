@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { dashboardService } from '../services/dashboard.service.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireRole } from '../middleware/auth.js';
+import { ROLE_GROUPS } from '../services/permissions.service.js';
 
 const router = Router();
 
@@ -19,14 +20,17 @@ router.get('/recent-orders', requireAuth, requireAdmin, async (req, res, next) =
     } catch (error) { next(error); }
 });
 
-router.get('/preferences', requireAuth, requireAdmin, async (req, res, next) => {
+// Preferences are per-user — every authenticated role (including plain client)
+// can read/write their OWN preferences. Backend keys by req.user.id so users
+// can't see/edit each other's settings.
+router.get('/preferences', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const prefs = await dashboardService.getPreferences(req.user.id);
         res.json(prefs);
     } catch (error) { next(error); }
 });
 
-router.put('/preferences', requireAuth, requireAdmin, async (req, res, next) => {
+router.put('/preferences', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const { widgetConfig } = req.body;
         const result = await dashboardService.savePreferences(req.user.id, widgetConfig);

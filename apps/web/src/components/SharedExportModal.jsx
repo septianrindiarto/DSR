@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useToast } from "./Toast";
 
 const EXPORT_FORMATS = [
   { key: "xlsx", label: "Excel (.xlsx)", ext: "xlsx", icon: "table_view",    desc: "Buka langsung di Microsoft Excel" },
@@ -17,6 +18,7 @@ const EXPORT_FORMATS = [
  *   onClose    — Close the modal
  */
 export default function SharedExportModal({ title = "Export Data", exportFn, onClose }) {
+  const toast = useToast();
   const [format, setFormat] = useState("xlsx");
   const [loading, setLoading] = useState(false);
 
@@ -26,7 +28,7 @@ export default function SharedExportModal({ title = "Export Data", exportFn, onC
       await exportFn(format);
       onClose();
     } catch (err) {
-      alert("Export gagal: " + err.message);
+      toast.error("Export gagal: " + err.message);
     } finally {
       setLoading(false);
     }

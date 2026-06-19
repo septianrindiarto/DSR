@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { API_BASE } from '../../lib/api';
+import { useToast } from '../Toast';
 
 export default function ExportModal({ onClose, periodParams }) {
+  const toast = useToast();
   const [report, setReport] = useState("journal");
   const [format, setFormat] = useState("csv");
   const [loading, setLoading] = useState(false);
@@ -17,7 +20,7 @@ export default function ExportModal({ onClose, periodParams }) {
   async function handleExport() {
     setLoading(true);
     try {
-      const base = "http://localhost:5000";
+      const base = API_BASE;
       let url;
       if (report === "journal") {
         url = `${base}/api/journal/export?format=${format}&${periodParams}`;
@@ -38,7 +41,7 @@ export default function ExportModal({ onClose, periodParams }) {
       }
       onClose();
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }

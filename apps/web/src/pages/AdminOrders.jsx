@@ -1,12 +1,14 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useToast } from "../components/Toast";
 import { useSearchParams } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../context/AuthContext";
 import { api, apiCache, swr } from "../lib/api";
 import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
-import { exportAs } from "../lib/dataFormats";
+import { exportAs, formatPrice, formatDate, formatDateRange } from "../lib/dataFormats";
 
 const statusColors = {
   pending: "bg-amber-100 text-amber-700",
@@ -17,8 +19,21 @@ const statusColors = {
 };
 
 // ─── Column Definitions ─────────────────────────────────────────────
-// Each column maps to a backend field and knows how to render its cell
-// align: header always centered; cell uses this — "right" for numbers, "left" for text.
+// Each column maps to a backend field and knows how to render its cell.
+// align: header always centered; cell uses this — "right" for numbers,
+// "left" for text.
+//
+// We carry TWO column orderings:
+//   • COLUMN_DEFS         — full agency view (legacy default, still used as
+//                           the master catalog for the column picker).
+//   • CLIENT_COLUMN_KEYS  — the 20-column order requested for client view
+//                           (matches the screenshot the user supplied):
+//                           kodeTransaksi(Kode), nama, companyName, mobil,
+//                           driver, pickupDate, returnDate, jumlahHari,
+//                           kontrakHarga, status, tujuan, pickupLocation,
+//                           paket, notes, createdBy, invoiceNumber,
+//                           invoiceSentDate, invoiceDueDate,
+//                           invoicePaidDate, invoicePaymentStatus.
 const COLUMN_DEFS = [
   { key: "no", labelKey: "no_", minWidth: 50, sortable: false, align: "right" },
   { key: "kodeTransaksi", labelKey: "kodeTransaksi", minWidth: 120, sortable: true, sortField: "orderNumber", align: "left" },
@@ -33,21 +48,63 @@ const COLUMN_DEFS = [
   { key: "driver", labelKey: "driver", minWidth: 140, sortable: false, align: "left" },
   { key: "kontrakHarga", labelKey: "kontrakHarga", minWidth: 140, sortable: true, sortField: "totalPrice", align: "right" },
   { key: "tujuan", labelKey: "tujuan", minWidth: 140, sortable: true, sortField: "destination", align: "left" },
+  { key: "pickupLocation", labelKey: "pickupLocation", minWidth: 140, sortable: false, align: "left" },
   { key: "inap", labelKey: "inap", minWidth: 70, sortable: false, align: "right" },
   { key: "lembur", labelKey: "lembur", minWidth: 80, sortable: false, align: "right" },
   { key: "status", labelKey: "status", minWidth: 120, sortable: true, sortField: "status", align: "left" },
   { key: "bailout", labelKey: "bailout", minWidth: 120, sortable: true, sortField: "bailout", align: "right" },
+  { key: "notes", labelKey: "keterangan", minWidth: 200, sortable: false, align: "left" },
+  { key: "createdBy", labelKey: "createdBy", minWidth: 140, sortable: false, align: "left" },
+  { key: "invoiceNumber", labelKey: "noInvoice", minWidth: 140, sortable: false, align: "left" },
+  { key: "invoiceSentDate", labelKey: "tglKirimInvoice", minWidth: 140, sortable: false, align: "left" },
+  { key: "invoiceDueDate", labelKey: "tglDueDateInvoice", minWidth: 150, sortable: false, align: "left" },
+  { key: "invoicePaidDate", labelKey: "tglRealisasi", minWidth: 130, sortable: false, align: "left" },
+  { key: "invoicePaymentStatus", labelKey: "statusInvoice", minWidth: 130, sortable: false, align: "left" },
 ];
 
 const ALL_COLUMN_KEYS = COLUMN_DEFS.map(c => c.key);
 const COLUMN_STORAGE_KEY = "dsr:orders:visibleColumns:v1";
+const CLIENT_COLUMN_STORAGE_KEY = "dsr:orders:visibleColumns:client:v1";
 
-function loadVisibleColumns() {
+// Order the client view shows by default (matches the screenshot the user
+// supplied; "no" row-counter omitted since the screenshot listed business
+// fields only and the row-counter is implicit).
+const CLIENT_COLUMN_KEYS = [
+  "kodeTransaksi",
+  "nama",
+  "companyName",
+  "mobil",
+  "driver",
+  "pickupDate",
+  "returnDate",
+  "jumlahHari",
+  "kontrakHarga",
+  "status",
+  "tujuan",
+  "pickupLocation",
+  "paket",
+  "notes",
+  "createdBy",
+  "invoiceNumber",
+  "invoiceSentDate",
+  "invoiceDueDate",
+  "invoicePaidDate",
+  "invoicePaymentStatus",
+];
+
+function loadVisibleColumns(isClient = false) {
+  // Use a SEPARATE storage key for the client view so toggling between an
+  // agency account and a client account on the same machine doesn't blow
+  // each other's column preferences away. Defaults differ by view type:
+  //   • client → the 20-column screenshot ordering
+  //   • agency → the legacy full catalog (every key in COLUMN_DEFS)
+  const storageKey = isClient ? CLIENT_COLUMN_STORAGE_KEY : COLUMN_STORAGE_KEY;
+  const defaults = isClient ? CLIENT_COLUMN_KEYS : ALL_COLUMN_KEYS;
   try {
-    const raw = localStorage.getItem(COLUMN_STORAGE_KEY);
-    if (!raw) return ALL_COLUMN_KEYS;
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return defaults;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return ALL_COLUMN_KEYS;
+    if (!Array.isArray(parsed)) return defaults;
 
     // ─── Schema migration: tglPemakaian → pickupDate + returnDate ─────────
     // Older saved layouts stored a single "tglPemakaian" column. Now that
@@ -64,10 +121,15 @@ function loadVisibleColumns() {
     if (!migrated.includes("pickupDate")) migrated.push("pickupDate");
     if (!migrated.includes("returnDate")) migrated.push("returnDate");
 
-    // Keep only valid keys, in the canonical order
+    // Preserve user-defined ORDER for the client view (so they can re-order
+    // columns in the picker later); for agency, keep canonical order.
+    if (isClient) {
+      const valid = new Set(ALL_COLUMN_KEYS);
+      return migrated.filter(k => valid.has(k));
+    }
     return ALL_COLUMN_KEYS.filter(k => migrated.includes(k));
   } catch {
-    return ALL_COLUMN_KEYS;
+    return defaults;
   }
 }
 
@@ -232,6 +294,16 @@ function downloadFile(filename, content, mime = "text/csv;charset=utf-8") {
 
 export default function AdminOrders() {
   const { t } = useLanguage();
+  const toast = useToast();
+  const { user } = useAuth();
+  // Client accounts (both `client` admin and plain `client` users, plus the
+  // legacy `client_admin`/`client` roles) see a different default column set —
+  // the 20 columns specified in the screenshot. Agency users keep the legacy
+  // full catalog. The check mirrors the one used by EditModal below for the
+  // company-name dropdown so behaviour stays consistent across the page.
+  const isClient =
+    user?.accountType === 'client' ||
+    user?.role === 'client' || user?.role === 'client_admin';
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("search") || "");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -254,7 +326,7 @@ export default function AdminOrders() {
   const [drivers, setDrivers] = useState(() => apiCache.get("drivers:available") || []);
   const [cars, setCars] = useState(() => apiCache.get("cars:list:limit=200")?.data || []);
   const [creatingOrder, setCreatingOrder] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState(loadVisibleColumns);
+  const [visibleColumns, setVisibleColumns] = useState(() => loadVisibleColumns(isClient));
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const columnPickerRef = useRef(null);
@@ -282,8 +354,13 @@ export default function AdminOrders() {
   }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    try { localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(visibleColumns)); } catch { /* ignore */ }
-  }, [visibleColumns]);
+    // Write to the storage key matching the caller's view. Storing the two
+    // sets under separate keys is what keeps a developer toggling between an
+    // agency seed account and a client test account from corrupting either
+    // layout.
+    const storageKey = isClient ? CLIENT_COLUMN_STORAGE_KEY : COLUMN_STORAGE_KEY;
+    try { localStorage.setItem(storageKey, JSON.stringify(visibleColumns)); } catch { /* ignore */ }
+  }, [visibleColumns, isClient]);
 
   // Close column picker when clicking outside
   useEffect(() => {
@@ -351,7 +428,7 @@ export default function AdminOrders() {
       invalidateOrders();
       loadOrders();
       setSelectedOrder(null);
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   async function handleAssignDriver(orderId, driverId) {
@@ -359,7 +436,7 @@ export default function AdminOrders() {
       await api.orders.assignDriver(orderId, driverId);
       invalidateOrders();
       loadOrders();
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   async function handleSendConfirmation(orderId) {
@@ -368,7 +445,7 @@ export default function AdminOrders() {
       if (result?.url) window.open(result.url, "_blank");
       invalidateOrders();
       loadOrders();
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   async function handleDelete() {
@@ -378,7 +455,7 @@ export default function AdminOrders() {
       setDeleteTarget(null);
       invalidateOrders();
       loadOrders();
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   async function handleEditSave(payload) {
@@ -387,7 +464,7 @@ export default function AdminOrders() {
       setEditOrder(null);
       invalidateOrders();
       loadOrders();
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   async function handleCreateSave(payload) {
@@ -396,7 +473,7 @@ export default function AdminOrders() {
       setCreatingOrder(false);
       invalidateOrders();
       loadOrders();
-    } catch (error) { alert(error.message); }
+    } catch (error) { toast.error(error.message); }
   }
 
   function handleSort(field) {
@@ -409,9 +486,9 @@ export default function AdminOrders() {
     return <span className="material-symbols-outlined text-[14px] text-primary ml-1">{sortOrder === "asc" ? "arrow_upward" : "arrow_downward"}</span>;
   }
 
-  const formatPrice = (p) => `Rp ${Number(p || 0).toLocaleString("id-ID")}`;
-  const formatDate = (d) => d ? new Date(d).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" }) : "-";
-  const formatDateRange = (a, b) => `${formatDate(a)} - ${formatDate(b)}`;
+  // Audit M-R2: formatPrice / formatDate / formatDateRange now imported
+  // from lib/dataFormats.js (shared with CarCard, AdminFleet, exports).
+
 
   // Render cell content for a given column key
   function renderCell(col, order, rowIndex) {
@@ -438,15 +515,49 @@ export default function AdminOrders() {
       case "driver": return <span className="text-slate-700">{order.driver?.name || "-"}</span>;
       case "kontrakHarga": return <span className="font-semibold text-slate-700">{formatPrice(order.totalPrice)}</span>;
       case "tujuan": return <span className="text-slate-700">{order.destination || "-"}</span>;
+      case "pickupLocation": return <span className="text-slate-700">{order.pickupLocation || "-"}</span>;
       case "inap": return <span className="text-slate-600">{Number(order.overnightNights || 0) || "-"}</span>;
       case "lembur": return <span className="text-slate-600">{Number(order.overtimeHours || 0) || "-"}</span>;
       case "status": return <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[order.status]}`}>{t(order.status)}</span>;
       case "bailout": return <span className="text-slate-700">{Number(order.bailout || 0) > 0 ? formatPrice(order.bailout) : "-"}</span>;
+      case "notes": return (
+        <span className="text-slate-700 text-xs line-clamp-2" title={order.notes || ""}>
+          {order.notes || "-"}
+        </span>
+      );
+      // The backend stores createdBy as a user id (FK to user.id). The
+      // orders list endpoint doesn't currently join the creator row, so we
+      // surface the raw id — sufficient for the rekap audit, and the
+      // join can be added later without changing this UI contract.
+      case "createdBy": return <span className="text-slate-600 text-xs font-mono">{order.createdBy || "-"}</span>;
+      case "invoiceNumber": return <span className="text-slate-700 font-mono text-xs">{order.invoiceNumber || "-"}</span>;
+      case "invoiceSentDate": return <span className="text-slate-600 text-xs">{formatDate(order.invoiceSentDate)}</span>;
+      case "invoiceDueDate": return <span className="text-slate-600 text-xs">{formatDate(order.invoiceDueDate)}</span>;
+      case "invoicePaidDate": return <span className="text-slate-600 text-xs">{formatDate(order.invoicePaidDate)}</span>;
+      case "invoicePaymentStatus": {
+        const s = (order.invoicePaymentStatus || "").toLowerCase();
+        const cls = s === "paid" ? "bg-emerald-100 text-emerald-700"
+          : s === "pending" ? "bg-amber-100 text-amber-700"
+          : "bg-slate-100 text-slate-600";
+        return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>{order.invoicePaymentStatus || "-"}</span>;
+      }
       default: return null;
     }
   }
 
-  const visibleCols = useMemo(() => COLUMN_DEFS.filter(c => visibleColumns.includes(c.key)), [visibleColumns]);
+  // Header label — supports both translated (labelKey) and literal (label)
+  // columns. Literal labels are used for the new client-view columns whose
+  // Indonesian names aren't part of the shared i18n bundle yet.
+  const colLabel = (col) => col.labelKey ? t(col.labelKey) : (col.label || col.key);
+
+  // Visible columns rendered in the order the user (or the default seed) put
+  // them in. For clients this preserves the screenshot ordering. For agency
+  // it preserves canonical COLUMN_DEFS order because their default was
+  // ALL_COLUMN_KEYS which is itself canonical.
+  const visibleCols = useMemo(() => {
+    const byKey = new Map(COLUMN_DEFS.map(c => [c.key, c]));
+    return visibleColumns.map(k => byKey.get(k)).filter(Boolean);
+  }, [visibleColumns]);
 
   // ─── Client-side search ──────────────────────────────────────────────
   // Build a flat string of every value the user can SEE on the row, then
@@ -528,7 +639,7 @@ export default function AdminOrders() {
         bailout: r.bailout,
       }));
       await exportAs(rows, format, "rekap-order");
-    } catch (error) { alert("Export gagal: " + error.message); }
+    } catch (error) { toast.error("Export gagal: " + error.message); }
   }
 
   // ─── Import ────────────────────────────────────────────────────────
@@ -630,13 +741,20 @@ export default function AdminOrders() {
             <span className="material-symbols-outlined text-[18px]">file_upload</span>
             {t("import")}
           </button>
-          <button
-            onClick={() => { ensureDriversAndCars(); setCreatingOrder(true); }}
-            className="px-3 py-2 text-sm bg-primary text-white rounded-lg hover:opacity-90 cursor-pointer flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-[18px]">add</span>
-            {t("addOrder")}
-          </button>
+          {/* "Tambah Rekap" is now CLIENT-HIDDEN only.
+              Clients book from the Dashboard (logged-in) or Landing (public)
+              now, so they don't need this button. Agency users keep the
+              create flow exactly as it was before so internal staff can
+              still add orders directly from Rekap Order when needed. */}
+          {!isClient && (
+            <button
+              onClick={() => { ensureDriversAndCars(); setCreatingOrder(true); }}
+              className="px-3 py-2 text-sm bg-primary text-white rounded-lg hover:opacity-90 cursor-pointer flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              {t("addOrder")}
+            </button>
+          )}
         </div>
       </div>
 
@@ -707,7 +825,7 @@ export default function AdminOrders() {
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs font-semibold text-slate-700">{t("showColumns")}</p>
                 <button
-                  onClick={() => setVisibleColumns(ALL_COLUMN_KEYS)}
+                  onClick={() => setVisibleColumns(isClient ? CLIENT_COLUMN_KEYS : ALL_COLUMN_KEYS)}
                   className="text-xs text-primary hover:underline cursor-pointer"
                 >
                   {t("resetColumns")}
@@ -720,15 +838,19 @@ export default function AdminOrders() {
                       type="checkbox"
                       checked={visibleColumns.includes(col.key)}
                       onChange={(e) => {
-                        setVisibleColumns(prev =>
-                          e.target.checked
-                            ? ALL_COLUMN_KEYS.filter(k => prev.includes(k) || k === col.key)
-                            : prev.filter(k => k !== col.key)
-                        );
+                        setVisibleColumns(prev => {
+                          if (e.target.checked) {
+                            // Insert in canonical (catalog) order so the picker
+                            // doesn't jumble the column layout when re-enabling
+                            // a previously hidden column.
+                            return ALL_COLUMN_KEYS.filter(k => prev.includes(k) || k === col.key);
+                          }
+                          return prev.filter(k => k !== col.key);
+                        });
                       }}
                       className="cursor-pointer"
                     />
-                    <span className="text-sm text-slate-700">{t(col.labelKey)}</span>
+                    <span className="text-sm text-slate-700">{colLabel(col)}</span>
                   </label>
                 ))}
               </div>
@@ -763,7 +885,7 @@ export default function AdminOrders() {
                     style={{ minWidth: col.minWidth }}
                   >
                     <span className="inline-flex items-center justify-center gap-1 align-middle">
-                      {t(col.labelKey)}
+                      {colLabel(col)}
                       {col.sortable && <SortIcon field={col.sortField || col.key} />}
                     </span>
                   </th>
@@ -990,17 +1112,36 @@ function DetailModal({ order, drivers, onClose, onStatusChange, onAssignDriver, 
 
 // ─── Edit / Create Modal ────────────────────────────────────────────
 function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onSave, t }) {
+  const toast = useToast();
   const toIso = (d) => d ? new Date(d).toISOString().slice(0, 10) : "";
   const today = new Date().toISOString().slice(0, 10);
+  const { user } = useAuth();
+  // Client users (account_type='client' OR legacy client/client_admin roles)
+  // are restricted to booking under THEIR own company. Agency users still see
+  // the full address-book list so they can pick any registered customer.
+  const isClient =
+    user?.accountType === 'client' ||
+    user?.role === 'client' || user?.role === 'client_admin';
   const [companies, setCompanies] = useState([]);
 
-  // Fetch company list once on mount
+  // Fetch company list once on mount. Scope depends on caller's accountType:
+  //   • Client → only their own org's company name (single option)
+  //   • Agency → the existing companies address book (all)
   useEffect(() => {
+    if (isClient) {
+      if (!user?.organizationId) return;
+      api.myOrg.getInfo()
+        .then((info) => {
+          if (info?.name) setCompanies([{ id: info.id, name: info.name }]);
+        })
+        .catch((err) => console.error("Failed to load org for company dropdown:", err));
+      return;
+    }
     api.companies.list("limit=500").then(res => {
       const rows = Array.isArray(res) ? res : (res?.data || []);
       setCompanies(rows);
     }).catch(() => {});
-  }, []);
+  }, [isClient, user?.organizationId]);
 
   const [form, setForm] = useState({
     customerName: order?.customer?.name || "",
@@ -1051,8 +1192,8 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
     payload.carId = payload.carId ? Number(payload.carId) : null;
     payload.driverId = payload.driverId ? Number(payload.driverId) : null;
     if (isNew) {
-      if (!payload.carId) { alert("Mobil wajib dipilih"); return; }
-      if (!payload.customerName) { alert("Nama wajib diisi"); return; }
+      if (!payload.carId) { toast.error("Mobil wajib dipilih"); return; }
+      if (!payload.customerName) { toast.error("Nama wajib diisi"); return; }
     }
     onSave(payload);
   }
@@ -1073,27 +1214,44 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
             <Field label={t("nama")}><input className="input" value={form.customerName} onChange={e => set("customerName", e.target.value)} required={isNew} /></Field>
             <Field label={t("companyName")}>
               {form.customerType === "company" ? (
-                <div className="relative">
-                  <input
-                    list="company-list"
-                    className="input pr-8"
+                isClient ? (
+                  // Client users can only book under their own org. Render as
+                  // a select with the org name(s) tied to their account.
+                  <select
+                    className="input"
                     value={form.companyName}
                     onChange={e => set("companyName", e.target.value)}
-                    placeholder="Pilih atau ketik nama perusahaan..."
-                    autoComplete="off"
-                  />
-                  <datalist id="company-list">
+                  >
+                    <option value="">-- Pilih Perusahaan --</option>
                     {companies.map(c => (
                       <option key={c.id} value={c.name}>{c.name}</option>
                     ))}
-                  </datalist>
-                  {form.companyName && (
-                    <button type="button" onClick={() => set("companyName", "")}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer">
-                      <span className="material-symbols-outlined text-[16px]">close</span>
-                    </button>
-                  )}
-                </div>
+                  </select>
+                ) : (
+                  // Agency users keep the existing autocomplete + free-text
+                  // entry so they can add new companies on the fly.
+                  <div className="relative">
+                    <input
+                      list="company-list"
+                      className="input pr-8"
+                      value={form.companyName}
+                      onChange={e => set("companyName", e.target.value)}
+                      placeholder="Pilih atau ketik nama perusahaan..."
+                      autoComplete="off"
+                    />
+                    <datalist id="company-list">
+                      {companies.map(c => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
+                    </datalist>
+                    {form.companyName && (
+                      <button type="button" onClick={() => set("companyName", "")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer">
+                        <span className="material-symbols-outlined text-[16px]">close</span>
+                      </button>
+                    )}
+                  </div>
+                )
               ) : (
                 <input className="input" value={form.companyName} onChange={e => set("companyName", e.target.value)} placeholder="-" />
               )}
@@ -1111,15 +1269,24 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
             {isNew && (
               <Field label={t("email")}><input type="email" className="input" value={form.customerEmail} onChange={e => set("customerEmail", e.target.value)} /></Field>
             )}
-            {/* Mobil + Driver are editable in BOTH create and edit modes */}
             <Field label={t("car")}>
               <select className="input" value={form.carId} onChange={e => set("carId", e.target.value)} required={isNew}>
                 <option value="">{isNew ? "-- Pilih Mobil --" : "-- Tanpa Mobil --"}</option>
-                {cars.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.brand} {c.name} {c.licensePlate ? `(${c.licensePlate})` : ""}
-                  </option>
-                ))}
+                {cars
+                  .filter(c =>
+                    c.status === "available" ||
+                    (!isNew && form.carId && String(c.id) === String(form.carId))
+                  )
+                  .map(c => {
+                    const isCurrent = !isNew && form.carId && String(c.id) === String(form.carId);
+                    const showStatusHint = isCurrent && c.status !== "available";
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.brand} {c.name} {c.licensePlate ? `(${c.licensePlate})` : ""}
+                        {showStatusHint ? ` - ${c.status}` : ""}
+                      </option>
+                    );
+                  })}
               </select>
             </Field>
             <Field label={t("driver")}>

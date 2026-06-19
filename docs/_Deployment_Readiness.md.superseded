@@ -1,0 +1,527 @@
+# DSR Solution — Deployment Readiness & VPS Runbook
+
+**Audience:** operator deploying DSR for the first time
+**Target:** single VPS (Ubuntu 22.04 LTS) running both API and web behind nginx
+**Database:** Neon Postgres (already managed — no install needed)
+**Status of code:** ready for staging deploy after the **must-fix** list in §2
+
+---
+
+## 1. Current Posture — what's already production-ready
+
+The codebase is in good shape on several axes that often block first deploys.
+
+Security middleware is already wired: `helmet` is enabled, `express-rate-limit`
+gives 200 req/min/IP on `/api/*` and a tighter 20 req/min on `/api/auth/*`,
+CORS is origin-allowlist driven (not wildcard), and the body parser is
+capped at 10 MB. Better Auth has `requireEmailVerification: true`, session
+TTL is 7 days with daily refresh, and the secret is env-driven.
+
+The frontend has a single `API_BASE` source of truth, request timeouts
+(30s `AbortController`), 401 interceptor with session-expired UX, and a
+404 catch-all. The Vite dev server is dev-only; production serves a static
+`dist/` bundle.
+
+The database layer uses Neon, which already provides nightly backups,
+point-in-time recovery, and connection pooling. No DB install required on
+the VPS.
+
+Email is Gmail SMTP via nodemailer (OAuth or App Password). Free, no
+rate-limit risk at expected verification + invite volumes.
+
+A health endpoint exists at `/api/health` for uptime checks.
+
+---
+
+## 2. Must-fix BEFORE production deploy
+
+These are the items that will break or expose the app if shipped as-is.
+
+### 2.1 Hardcoded Windows path in Rekap sync watcher
+
+`apps/api/src/services/sync.service.js:11-12`:
+
+```js
+export const REKAP_PATH = process.env.REKAP_XLSX_PATH
+  || 'D:\\Project\\DSR\\DSR Invoice Automation\\Rekap 2026.xlsx';
+```
+
+On a Linux VPS this fallback path will never exist. The watcher is
+`fs.existsSync`-guarded so it won't crash, but every 10 minutes it will
+silently no-op. **Fix:** set `REKAP_SYNC_DISABLED=true` in the VPS `.env`
+unless you also upload the rekap file to a Linux path and point
+`REKAP_XLSX_PATH` at it. For most prod deployments this feature is
+desktop-only — disable it.
+
+### 2.2 Uploads directory inside the deploy tree
+
+`apps/api/uploads/` holds all car photos and finance PDFs (40+ files
+already). If you deploy by re-cloning or `git pull` the repo, the
+directory persists, but a `rm -rf` deploy strategy would wipe customer
+data. **Fix:** symlink `apps/api/uploads/` to an external persistent
+directory like `/var/lib/dsr/uploads/`. Set this up once before first
+deploy; subsequent deploys leave it alone.
+
+```bash
+sudo mkdir -p /var/lib/dsr/uploads/finance
+sudo chown -R dsr:dsr /var/lib/dsr
+mv apps/api/uploads /tmp/old-uploads
+ln -s /var/lib/dsr/uploads apps/api/uploads
+mv /tmp/old-uploads/* /var/lib/dsr/uploads/  # if migrating data
+```
+
+### 2.3 `trust proxy` not set — rate limit broken behind nginx
+
+`express-rate-limit` keys by `req.ip`. When the API sits behind nginx,
+`req.ip` is `127.0.0.1` for every request, so all clients share one
+rate-limit bucket — one user can lock everyone out. **Fix:** add one
+line near the top of `apps/api/src/index.js`:
+
+```js
+app.set('trust proxy', 1);  // one reverse proxy hop (nginx)
+```
+
+This also makes Better Auth's IP-based bookkeeping accurate.
+
+### 2.4 CORS + trustedOrigins still allow localhost in prod
+
+`apps/api/src/index.js:58-63` and `apps/api/src/auth.js:127-131` both
+include `http://localhost:5173/5174/5175` in the allowlist regardless
+of environment. In prod this lets a developer's local machine talk to
+the production API with credentials. **Fix:** gate the localhost entries
+on `NODE_ENV !== 'production'`.
+
+```js
+// index.js
+const allowedOrigins = [
+    process.env.CORS_ORIGIN,
+    ...(process.env.NODE_ENV !== 'production'
+        ? ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175']
+        : []),
+].filter(Boolean);
+```
+
+Same change in `auth.js` `trustedOrigins`.
+
+### 2.5 Graceful shutdown is missing
+
+`app.listen()` returns a server but nothing handles `SIGTERM`. When PM2
+restarts the process, in-flight requests get killed mid-write. **Fix:**
+
+```js
+const server = app.listen(PORT, () => { /* …existing log lines… */ });
+['SIGTERM', 'SIGINT'].forEach(sig => {
+    process.on(sig, () => {
+        console.log(`[shutdown] ${sig} received, draining…`);
+        server.close(() => { console.log('[shutdown] closed.'); process.exit(0); });
+        setTimeout(() => process.exit(1), 10_000).unref(); // hard exit after 10s
+    });
+});
+```
+
+### 2.6 `NODE_ENV` not consumed
+
+Express disables view caching, error stack leakage, and a few other
+production behaviors based on `NODE_ENV`. PM2 should set
+`NODE_ENV=production` (see §4 ecosystem file).
+
+### 2.7 Frontend `API_BASE` at build time
+
+The web bundle is static. Whatever value `VITE_API_BASE` had at
+`npm run build` is baked into the JS. **Two options:**
+
+- **Same-origin (recommended):** nginx serves both `/` (web dist) and
+  `/api` (proxy to backend). Build the web with `VITE_API_BASE=`
+  (empty) or `/api` — same-origin means no CORS headache and cookies
+  Just Work.
+- **Different subdomains:** `app.dsrappai.com` for web,
+  `api.dsrappai.com` for API. Build with
+  `VITE_API_BASE=https://api.dsrappai.com`. Set `CORS_ORIGIN` and
+  `BETTER_AUTH_URL` accordingly.
+
+### 2.8 Pin Node version
+
+`apps/api/package.json` and `apps/web/package.json` have no `engines`
+field. **Fix:** add `"engines": { "node": ">=22 <23" }` to both so PM2
+and CI use the same Node version you tested against.
+
+### 2.9 Rate limit gates auth routes correctly only after fix
+
+Once `trust proxy` is set (§2.3), the 20/min auth limit is meaningful.
+Before that, it's effectively per-shared-IP — which can also exhaust
+the registration flow when several teammates onboard from the same
+office IP. Consider lifting `authLimiter` to 40/min once that's
+confirmed.
+
+### 2.10 Console.log noise
+
+`auth.js` prints every verification link to the console, the Rekap
+watcher logs every tick, registration logs collision attempts. None
+of these are security risks, but they bloat the systemd journal.
+**Recommended:** swap `console.log` for a thin level-gated wrapper
+(`debug/info/warn/error`) and default to `warn` in production.
+**Pragmatic shortcut:** set up `logrotate` on `/var/log/pm2/` and ship
+with what's there.
+
+---
+
+## 3. Should-standardize (won't break, will help)
+
+Items that aren't blockers but are friction multipliers if left.
+
+A `.dockerignore` and a `Dockerfile` would make staging environments
+trivial. Not required for VPS deploy, but worth the hour. The user
+can run `docker compose up` locally and match production.
+
+The `apps/api/src/scripts/` directory contains 10+ one-off migration
+and audit scripts (`backfill-display-ids.js`, `audit-parent-agency.js`,
+`normalize-client-roles.js`, etc). They are safe to leave but the
+operator should know which have been run and which haven't.
+**Recommended:** add a `apps/api/src/scripts/applied.txt` log that the
+operator appends to after each successful run, or rename completed
+ones with a `.done` suffix. Avoids "did I already run this?" anxiety.
+
+Frontend bundle size. `npm run build` should be checked once before
+deploy — anything over 1 MB of JS per chunk warrants a code-split via
+React.lazy on heavy routes (AdminDocuments, AdminFinance). Not a
+blocker; nginx with gzip + brotli will mask a lot.
+
+Error pages. The 404 page is good. There is no app-level error
+boundary, which means an uncaught React exception leaves the user
+staring at a blank screen with no recovery. Wrap the router in a top-level
+`<ErrorBoundary>` that shows a "Mohon muat ulang halaman" message
+and a reload button. ~30 lines of code, big UX win.
+
+Sentry or similar. For low traffic you don't need it; once you have
+real users, hook in Sentry's free tier on both web and API so silent
+prod errors surface.
+
+---
+
+## 4. VPS deployment — step by step
+
+Assumes a fresh Ubuntu 22.04 LTS VPS (2 vCPU, 2 GB RAM, 40 GB disk
+is enough for first 6 months), a domain pointed at the VPS IP, and
+SSH access as root or a sudo-capable user.
+
+### 4.1 Provision basics
+
+```bash
+# As root on the VPS
+apt update && apt upgrade -y
+apt install -y curl git nginx ufw fail2ban
+
+# Node 22 LTS
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs
+
+# PM2 globally
+npm install -g pm2
+
+# Create app user (don't run prod as root)
+adduser --disabled-password --gecos "" dsr
+usermod -aG www-data dsr
+mkdir -p /var/lib/dsr/uploads
+chown -R dsr:dsr /var/lib/dsr
+
+# Firewall
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw enable
+```
+
+### 4.2 Clone + install
+
+```bash
+# As dsr user
+sudo -iu dsr
+cd ~
+git clone https://your-git-host/dsr.git
+cd dsr/apps/api
+npm ci --omit=dev
+cd ../web
+npm ci
+# Build frontend once env is set (next step)
+```
+
+### 4.3 Production .env
+
+```bash
+# /home/dsr/dsr/apps/api/.env
+NODE_ENV=production
+PORT=5000
+
+DATABASE_URL=postgres://...neon connection string...
+
+BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+BETTER_AUTH_URL=https://app.dsrappai.com
+CORS_ORIGIN=https://app.dsrappai.com
+APP_URL=https://app.dsrappai.com
+
+GMAIL_USER=admin@dsrappai.com
+GMAIL_FROM_NAME=DSR Solution
+GMAIL_OAUTH_CLIENT_ID=...
+GMAIL_OAUTH_CLIENT_SECRET=...
+GMAIL_OAUTH_REFRESH_TOKEN=...
+
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ADMIN_CHAT_ID=...
+
+DEBUG=false
+REKAP_SYNC_DISABLED=true
+```
+
+`chmod 600 /home/dsr/dsr/apps/api/.env` so only `dsr` can read it.
+
+### 4.4 Build the frontend with same-origin API base
+
+```bash
+cd ~/dsr/apps/web
+# Empty base means fetch('/api/...') — same-origin. nginx routes /api → 5000.
+echo "VITE_API_BASE=" > .env.production
+npm run build
+# Output lands in apps/web/dist/
+```
+
+### 4.5 Uploads volume
+
+```bash
+cd ~/dsr/apps/api
+rm -rf uploads          # only if nothing important there
+ln -s /var/lib/dsr/uploads uploads
+```
+
+### 4.6 PM2 ecosystem file
+
+Create `~/dsr/ecosystem.config.cjs`:
+
+```js
+module.exports = {
+    apps: [{
+        name: 'dsr-api',
+        cwd: '/home/dsr/dsr/apps/api',
+        script: 'src/index.js',
+        instances: 1,                       // bump to 'max' only with cluster + sticky sessions
+        exec_mode: 'fork',
+        max_memory_restart: '512M',
+        env: {
+            NODE_ENV: 'production',
+        },
+        // PM2 reloads dotenv every restart
+        out_file: '/var/log/pm2/dsr-api-out.log',
+        error_file: '/var/log/pm2/dsr-api-err.log',
+        merge_logs: true,
+        log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    }],
+};
+```
+
+```bash
+sudo mkdir -p /var/log/pm2 && sudo chown dsr:dsr /var/log/pm2
+pm2 start ~/dsr/ecosystem.config.cjs
+pm2 save
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u dsr --hp /home/dsr
+```
+
+### 4.7 nginx config
+
+`/etc/nginx/sites-available/dsr`:
+
+```nginx
+# Redirect plain HTTP to HTTPS
+server {
+    listen 80;
+    server_name app.dsrappai.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name app.dsrappai.com;
+
+    # certbot will fill these in (see §4.8)
+    ssl_certificate     /etc/letsencrypt/live/app.dsrappai.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.dsrappai.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Gzip + brotli (brotli requires nginx-extras)
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # Web static
+    root /home/dsr/dsr/apps/web/dist;
+    index index.html;
+
+    # API reverse proxy
+    location /api/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    # Uploads — served directly by nginx (faster than going through node)
+    location /uploads/ {
+        alias /var/lib/dsr/uploads/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # SPA fallback — any unknown path returns index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache busted assets aggressively (Vite outputs hashed filenames)
+    location ~* \.(?:js|css|woff2?|ttf|png|jpg|jpeg|gif|svg|ico)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    client_max_body_size 12M;     # match express body limit
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/dsr /etc/nginx/sites-enabled/dsr
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 4.8 TLS via Let's Encrypt
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d app.dsrappai.com
+# Auto-renew is already wired via systemd timer; verify:
+sudo systemctl status certbot.timer
+```
+
+### 4.9 Database migrations
+
+Run any pending Drizzle migrations BEFORE the first PM2 start to the
+new database, then once on every subsequent deploy that ships schema
+changes.
+
+```bash
+cd ~/dsr/apps/api
+node src/scripts/audit-parent-agency.js   # phase 4C parent_agency fill
+# any other migration scripts here, in order
+npm run migrate                            # if you've defined this
+```
+
+### 4.10 Smoke test
+
+```bash
+curl https://app.dsrappai.com/api/health
+# Expected: {"status":"ok","timestamp":"..."}
+```
+
+Then a real flow: register a test agency admin → check Gmail SMTP
+delivered the verification link → click → log in → create an order
+→ confirm it appears in Rekap.
+
+---
+
+## 5. Post-deploy hygiene
+
+A weekly checklist worth running for the first month:
+
+PM2 logs cleared. `pm2 flush` between deploys keeps `/var/log/pm2/*`
+manageable. Or configure `pm2-logrotate`:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 50M
+pm2 set pm2-logrotate:retain 7
+```
+
+Backup verification. Neon does the database; uploads need backing up
+separately. Add a cron:
+
+```bash
+# /etc/cron.daily/dsr-uploads-backup
+0 3 * * * tar -czf /var/backups/dsr-uploads-$(date +\%F).tgz -C /var/lib/dsr uploads
+0 4 * * * find /var/backups/dsr-uploads-*.tgz -mtime +14 -delete
+```
+
+Uptime monitoring. Hit `/api/health` from UptimeRobot or Better Stack
+(both have free tiers). Alert if down >2 minutes.
+
+TLS expiry. certbot's auto-renew is reliable but worth a once-a-quarter
+manual check: `sudo certbot certificates`.
+
+Updates. `apt update && apt upgrade -y` monthly. Reboot if a kernel
+update lands. PM2 brings the API back automatically after reboot if
+§4.6 startup line was run.
+
+---
+
+## 6. Deploy script template
+
+For subsequent deploys, this is the minimum:
+
+```bash
+#!/bin/bash
+# ~/dsr-deploy.sh
+set -e
+cd /home/dsr/dsr
+git pull --ff-only
+
+cd apps/api
+npm ci --omit=dev
+node src/scripts/migrate.js  # or whatever migration step you have
+
+cd ../web
+npm ci
+npm run build
+
+pm2 reload dsr-api
+echo "Deploy OK at $(date)"
+```
+
+`chmod +x ~/dsr-deploy.sh` then `./dsr-deploy.sh` on each release.
+PM2 reload is graceful — it spins up the new process and only kills
+the old once `/api/health` responds.
+
+---
+
+## 7. Sizing reference
+
+Approximate resource usage to plan capacity:
+
+| Resource | Idle | Per active user | Per booking |
+|----------|------|-----------------|-------------|
+| API RAM  | ~80 MB | +2 MB session | negligible |
+| API CPU  | <1%   | spike on sync | spike on PDF gen |
+| Bandwidth | -    | ~50 KB/page after first | ~5 KB/order |
+| Uploads disk | 0 | - | car photos ~200KB ea |
+
+For ~50 daily active users, a 2 vCPU / 2 GB RAM droplet is
+comfortable; storage is the variable to watch as fleet photos
+accumulate.
+
+---
+
+## 8. Rollback plan
+
+PM2 keeps the previous process around for one tick. If `pm2 reload`
+deploys a broken build:
+
+```bash
+cd /home/dsr/dsr
+git log --oneline -10            # find last known-good SHA
+git reset --hard <sha>
+cd apps/web && npm run build
+pm2 reload dsr-api
+```
+
+Database rollbacks need more care — Neon's branching feature lets you
+fork the prod DB at a point-in-time if a migration corrupts data, but
+DDL changes are not auto-reversible. Always test migrations on a Neon
+branch first.

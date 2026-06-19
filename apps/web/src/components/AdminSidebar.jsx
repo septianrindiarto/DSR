@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../context/AuthContext";
+import { visibleNavFor, FEATURES, canAccess } from "../lib/permissions";
 
 export default function AdminSidebar({ mobileMenuOpen, onClose }) {
   const location = useLocation();
@@ -8,25 +9,30 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
   const { t, lang, toggleLanguage } = useLanguage();
   const { user, logout } = useAuth();
 
-  const isSuperAdmin = user?.role === 'superadmin';
-  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  // `key` must match a FEATURES value so permissions can gate the item.
+  const allNavItems = [
+    { key: FEATURES.DASHBOARD, label: t('dashboard'), icon: "dashboard", path: "/admin/dashboard" },
+    { key: FEATURES.FLEET, label: t('fleet'), icon: "directions_car", path: "/admin/fleet" },
+    { key: FEATURES.ORDERS, label: t('orderRecap'), icon: "receipt_long", path: "/admin/orders" },
+    { key: FEATURES.SCHEDULE, label: t('schedule'), icon: "calendar_month", path: "/admin/schedule" },
+    { key: FEATURES.CUSTOMERS, label: t('customers'), icon: "group", path: "/admin/customers" },
+    { key: FEATURES.DRIVERS, label: t('drivers'), icon: "badge", path: "/admin/drivers" },
+    { key: FEATURES.ANALYTICS, label: t('analytics'), icon: "analytics", path: "/admin/analytics" },
+    { key: FEATURES.FINANCE, label: t('finance'), icon: "payments", path: "/admin/finance" },
+    { key: FEATURES.DOCUMENTS, label: t('documents'), icon: "description", path: "/admin/documents" },
+  ];
 
-  const navItems = [
-    { label: t('dashboard'), icon: "dashboard", path: "/admin/dashboard" },
-    { label: t('fleet'), icon: "directions_car", path: "/admin/fleet" },
-    { label: t('orderRecap'), icon: "receipt_long", path: "/admin/orders" },
-    { label: t('schedule'), icon: "calendar_month", path: "/admin/schedule" },
-    { label: t('customers'), icon: "group", path: "/admin/customers" },
-    { label: t('drivers'), icon: "badge", path: "/admin/drivers" },
-    { label: t('analytics'), icon: "analytics", path: "/admin/analytics" },
-    { label: t('finance'), icon: "payments", path: "/admin/finance" },
-    { label: t('documents'), icon: "description", path: "/admin/documents" },
-  ].filter(Boolean);
+  // Permission gates — single source of truth is canAccess(user, feature)
+  // which considers accountType + role + per-user grants.
+  const navItems = visibleNavFor(user, allNavItems);
+  const canSeeSettings = canAccess(user, FEATURES.SETTINGS);
+  const canSeeUsers = canAccess(user, FEATURES.USERS);
+  const canSeeAccessRequests = canAccess(user, FEATURES.ACCESS_REQUESTS);
 
-  // Admin-only items appended after main nav
-  const adminNavItems = isAdmin ? [
-    { label: 'Manajemen Pengguna', icon: "manage_accounts", path: "/admin/users" },
-  ] : [];
+  // Admin items — visible to both agency admins AND client admins.
+  const adminNavItems = [];
+  if (canSeeUsers) adminNavItems.push({ label: t('userManagement'), icon: "manage_accounts", path: "/admin/users" });
+  if (canSeeAccessRequests) adminNavItems.push({ label: t('accessRequests'), icon: "lock_open", path: "/admin/access-requests" });
 
   const handleLogout = async () => {
     try {
@@ -56,8 +62,14 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
         <div>
           {/* Logo Area */}
           <div className="h-20 flex items-center px-6 border-b border-neutral-800 gap-3">
+            {/* Logo links to /admin/dashboard so navigating from inside the
+                admin panel keeps the user in the authenticated context.
+                Public landing page is reachable via direct URL / from the
+                user menu. This was the root cause of the "I got logged out"
+                report — clicking the logo dumped users onto the public
+                landing page where the Masuk button made them re-login. */}
             <Link
-              to="/"
+              to="/admin/dashboard"
               className="flex items-center gap-3 hover:opacity-80 transition-opacity"
             >
               <img
@@ -70,7 +82,7 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
                   DSR Solution
                 </h1>
                 <p className="text-xs text-neutral-500 font-medium">
-                  Panel Admin
+                  {t('adminPanel')}
                 </p>
               </div>
             </Link>
@@ -105,7 +117,7 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
             {adminNavItems.length > 0 && (
               <>
                 <div className="mt-6 px-4 mb-2 text-xs font-semibold text-neutral-600 uppercase tracking-wider">
-                  Administrasi
+                  {t('administration')}
                 </div>
                 {adminNavItems.map((item) => {
                   const isActive = location.pathname === item.path;
@@ -130,23 +142,27 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
               </>
             )}
 
-            <div className="mt-6 px-4 text-xs font-semibold text-neutral-600 uppercase tracking-wider">
-              {t('account')}
-            </div>
-            <Link
-              to="/admin/settings"
-              onClick={onClose}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all group ${
-                location.pathname === "/admin/settings"
-                  ? "bg-primary text-white shadow-lg shadow-primary/20"
-                  : "hover:bg-sidebar-hover text-neutral-400 hover:text-white"
-              }`}
-            >
-              <span className={`material-symbols-outlined text-[22px] ${location.pathname === "/admin/settings" ? "" : "group-hover:text-primary transition-colors"}`}>
-                settings
-              </span>
-              <span className="text-sm font-medium">{t('settings')}</span>
-            </Link>
+            {canSeeSettings && (
+              <>
+                <div className="mt-6 px-4 text-xs font-semibold text-neutral-600 uppercase tracking-wider">
+                  {t('account')}
+                </div>
+                <Link
+                  to="/admin/settings"
+                  onClick={onClose}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all group ${
+                    location.pathname === "/admin/settings"
+                      ? "bg-primary text-white shadow-lg shadow-primary/20"
+                      : "hover:bg-sidebar-hover text-neutral-400 hover:text-white"
+                  }`}
+                >
+                  <span className={`material-symbols-outlined text-[22px] ${location.pathname === "/admin/settings" ? "" : "group-hover:text-primary transition-colors"}`}>
+                    settings
+                  </span>
+                  <span className="text-sm font-medium">{t('settings')}</span>
+                </Link>
+              </>
+            )}
           </nav>
         </div>
 
@@ -167,8 +183,7 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
             <div className="h-9 w-9 rounded-full bg-primary/20 flex items-center justify-center text-primary text-sm font-bold">
               {user?.name?.[0]?.toUpperCase() || 'A'}
             </div>
-            <div className="flex flex-col overflow-hidden">
-              <span className="text-sm font-medium text-white truncate">
+            <div className="flex flex-col overflow-hidden"><span className="text-sm font-medium text-white truncate">
                 {user?.name || 'Admin'}
               </span>
               <span className="text-xs text-neutral-500 truncate">
@@ -177,7 +192,8 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
             </div>
           </div>
 
-          {/* Logout */}
+          {/* Logout button. Calls handleLogout which clears the session
+              cookie via the API then navigates back to /admin/login. */}
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-red-900/20 text-neutral-400 hover:text-primary transition-colors group cursor-pointer"

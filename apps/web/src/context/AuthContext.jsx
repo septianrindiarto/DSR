@@ -6,10 +6,32 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [sessionExpired, setSessionExpired] = useState(false);
 
     useEffect(() => {
         checkSession();
     }, []);
+
+    // Audit M-05: listen for the 401 interceptor's event. When a session
+    // expires while the user has the tab open, clear local auth state and
+    // flip the sessionExpired flag so consumers can show a banner and
+    // redirect. The probe call (/api/auth/get-session on mount) opts out
+    // of this interceptor so it does not falsely trip on the very first
+    // visit when the user is just not logged in yet.
+    useEffect(() => {
+        function onAuthExpired() {
+            if (user || sessionExpired) {
+                setUser(null);
+                setSessionExpired(true);
+            }
+        }
+        window.addEventListener('auth:expired', onAuthExpired);
+        return () => window.removeEventListener('auth:expired', onAuthExpired);
+    }, [user, sessionExpired]);
+
+    function clearSessionExpired() {
+        setSessionExpired(false);
+    }
 
     async function checkSession() {
         try {
@@ -33,11 +55,15 @@ export function AuthProvider({ children }) {
         return result;
     }
 
-    async function register(name, email, password) {
-        const result = await api.auth.signUp({ name, email, password });
-        if (result?.user) {
-            setUser(result.user);
-        }
+    async function register(payload) {
+        // Accepts the full extended payload:
+        //   { name, email, password, phone, customerType, companyName, accountType }
+        // For backward compatibility, also accepts the old 3-arg call signature.
+        const data = (typeof payload === 'string')
+            ? { name: payload, email: arguments[1], password: arguments[2] }
+            : payload;
+        const result = await api.auth.signUp(data);
+        // Do NOT auto-login — Better Auth blocks login until verified.
         return result;
     }
 
@@ -47,7 +73,10 @@ export function AuthProvider({ children }) {
     }
 
     return (
-        <AuthContext.Provider value={{ user, loading, login, register, logout, checkSession }}>
+        <AuthContext.Provider value={{
+            user, loading, login, register, logout, checkSession,
+            sessionExpired, clearSessionExpired,
+        }}>
             {children}
         </AuthContext.Provider>
     );

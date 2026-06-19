@@ -326,3 +326,52 @@ export function acceptForFormat(format) {
   const exts = f.key === "txt" ? ".txt,.tsv" : `.${f.ext}`;
   return `${exts},${f.mime.split(";")[0]}`;
 }
+
+// === Shared formatters (audit H-01) ===
+// Drop-in replacements for the per-page formatPrice / formatDate copies that
+// drifted across AdminFleet, AdminOrders, CarCard, CarDetail, etc. Use these
+// going forward; existing duplicates can be migrated incrementally.
+
+// Full-digit Rupiah for tables and invoices, e.g. "Rp 1.500.000".
+export function formatPrice(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "Rp 0";
+    return "Rp " + n.toLocaleString("id-ID");
+}
+
+// Compact Rupiah for cards and badges, e.g. "Rp 1,5jt", "Rp 50rb".
+export function formatPriceShort(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "Rp 0";
+    if (n >= 1_000_000) {
+        const m = n / 1_000_000;
+        const display = m === Math.floor(m) ? String(Math.floor(m)) : m.toFixed(1).replace(".", ",");
+        return "Rp" + display + "jt";
+    }
+    if (n >= 1000) {
+        return "Rp" + Math.round(n / 1000) + "rb";
+    }
+    return "Rp" + n;
+}
+
+// Default locale-aware Indonesian date. Pass opts to override.
+export function formatDate(value, opts) {
+    if (!value) return "-";
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return "-";
+    const fmt = opts || { day: "numeric", month: "short", year: "numeric" };
+    return d.toLocaleDateString("id-ID", fmt);
+}
+
+// "5 Jun 2026 - 7 Jun 2026"
+export function formatDateRange(start, end) {
+    return formatDate(start) + " - " + formatDate(end);
+}
+
+// ISO yyyy-mm-dd for <input type="date"> binding.
+export function toIsoDate(value) {
+    if (!value) return "";
+    const d = value instanceof Date ? value : new Date(value);
+    if (isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
+}

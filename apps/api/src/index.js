@@ -33,6 +33,15 @@ import fs from 'fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 5000;
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ─── Reverse Proxy ───────────────────────────────────────────────────
+// Behind nginx, req.ip is 127.0.0.1 for every request unless we trust
+// the X-Forwarded-For header. Without this, express-rate-limit buckets
+// every client into one shared limit, letting any user lock everyone
+// else out. "1" means one proxy hop (nginx). No-op in dev where there
+// is no proxy in front.
+app.set('trust proxy', 1);
 
 // ─── Security ────────────────────────────────────────────────────────
 app.use(helmet({
@@ -55,12 +64,18 @@ const authLimiter = rateLimit({
 });
 
 // ─── CORS ────────────────────────────────────────────────────────────
-const allowedOrigins = [
-    process.env.CORS_ORIGIN || 'http://localhost:5173',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:5175',
-].filter(Boolean);
+// Localhost entries are dev-only — in production the only allowed origin
+// is whatever CORS_ORIGIN points at, so a developer machine cannot send
+// cookies to the prod API. CORS_ORIGIN may itself be comma-separated to
+// allow more than one prod origin (e.g. app.dsrappai.com,admin.dsrappai.com).
+const corsOriginEnv = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+const devOrigins = IS_PROD
+    ? []
+    : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'];
+const allowedOrigins = [...corsOriginEnv, ...devOrigins];
 
 app.use(cors({
     origin: (origin, callback) => {
@@ -88,6 +103,12 @@ app.use(express.urlencoded({ extended: true }));
 // ─── Static Files (uploads) ─────────────────────────────────────────
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
+// ─── Custom auth extensions — mounted BEFORE the Better Auth catch-all
+//     so /api/auth/register-extended reaches our handler instead of being
+//     intercepted by Better Auth's wildcard. ────────────────────────────
+import authExtraRoutes from './routes/auth-extra.routes.js';
+app.use('/api/auth', authLimiter, authExtraRoutes);
+
 // ─── Better Auth ─────────────────────────────────────────────────────
 app.all('/api/auth/*splat', authLimiter, toNodeHandler(auth));
 
@@ -108,6 +129,13 @@ app.use('/api/finance', apiLimiter, financeRoutes);
 app.use('/api/journal', apiLimiter, journalRoutes);
 app.use('/api/accounts', apiLimiter, accountsRoutes);
 app.use('/api/users', apiLimiter, usersRoutes);
+import accessRequestsRoutes from './routes/access-requests.routes.js';
+app.use('/api/access-requests', apiLimiter, accessRequestsRoutes);
+import orgsRoutes from './routes/orgs.routes.js';
+app.use('/api/orgs', apiLimiter, orgsRoutes);
+// Telegram + future channels (test ping, status). Admin-only inside the router.
+import notificationsRoutes from './routes/notifications.routes.js';
+app.use('/api/notifications', apiLimiter, notificationsRoutes);
 
 // ─── Health Check ────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -118,7 +146,7 @@ app.get('/api/health', (req, res) => {
 app.use(errorHandler);
 
 // ─── Start Server ────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`🚗 DSR Solution API running on http://localhost:${PORT}`);
     console.log(`📋 Auth:       http://localhost:${PORT}/api/auth`);
     console.log(`🔧 Debug mode: ${process.env.DEBUG === 'true' ? 'ON' : 'OFF'}`);
@@ -147,8 +175,33 @@ app.listen(PORT, () => {
         // Kick off shortly after boot so the server doesn't start blocked on a sync
         setTimeout(tick, 5_000);
         setInterval(tick, intervalMs);
-        console.log(`⏱️  Rekap auto-sync: every ${Math.round(intervalMs / 60000)}m (file=${REKAP_PATH})`);
+        console.log("Rekap sync watcher started, every " + Math.round(intervalMs / 60000) + " min, file=" + REKAP_PATH);
     } else {
-        console.log('⏱️  Rekap auto-sync: DISABLED via REKAP_SYNC_DISABLED');
+        console.log("Rekap auto-sync disabled via REKAP_SYNC_DISABLED");
     }
+});
+
+// ─── Graceful Shutdown ───────────────────────────────────────────────
+// PM2 reloads send SIGTERM. Without this, in-flight requests get killed
+// mid-write. We close the server (stops accepting new connections,
+// drains current ones), give it 10 seconds, then hard-exit. SIGINT
+// covers Ctrl+C in local dev so the same shutdown path runs everywhere.
+['SIGTERM', 'SIGINT'].forEach((sig) => {
+    process.on(sig, () => {
+        console.log(`[shutdown] ${sig} received, draining…`);
+        server.close((err) => {
+            if (err) {
+                console.error('[shutdown] server.close error:', err.message);
+                process.exit(1);
+            }
+            console.log('[shutdown] all connections closed, bye.');
+            process.exit(0);
+        });
+        // Safety net: if a long-running request refuses to finish,
+        // force-exit after 10s so PM2 can bring the new process up.
+        setTimeout(() => {
+            console.warn('[shutdown] drain timeout, forcing exit.');
+            process.exit(1);
+        }, 10_000).unref();
+    });
 });

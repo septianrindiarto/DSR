@@ -1,49 +1,42 @@
-const features = [
-    {
-        icon: "verified_user",
-        title: "Terpercaya & Aman",
-        description:
-            "Kami menjamin keamanan dan kenyamanan setiap unit kendaraan yang kami sewakan.",
-    },
-    {
-        icon: "price_check",
-        title: "Harga Kompetitif",
-        description:
-            "Dapatkan penawaran harga terbaik untuk sewa harian, mingguan, maupun bulanan.",
-    },
-    {
-        icon: "support_agent",
-        title: "Layanan 24 Jam",
-        description:
-            "Tim support kami siap membantu kebutuhan perjalanan Anda kapanpun diperlukan.",
-    },
-];
+import { useLanguage } from "../context/LanguageContext";
+
+// Audit M-01: every visible string flows through t().
 
 export default function FeaturesSection() {
-    return (
-        <section className="py-16 bg-white border-t border-gray-100">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                    {features.map((feature, index) => (
-                        <div
-                            key={index}
-                            className="flex flex-col items-center text-center p-6 rounded-xl hover:bg-gray-50 transition-colors"
-                        >
-                            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 text-primary">
-                                <span className="material-symbols-outlined text-3xl">
-                                    {feature.icon}
-                                </span>
-                            </div>
-                            <h3 className="text-lg font-bold text-text-main mb-2">
-                                {feature.title}
-                            </h3>
-                            <p className="text-gray-500 text-sm leading-relaxed">
-                                {feature.description}
-                            </p>
-                        </div>
-                    ))}
-                </div>
+  const { t } = useLanguage();
+  const features = [
+    { icon: "verified", title: t("feature1Title"), body: t("feature1Body") },
+    { icon: "price_check", title: t("feature2Title"), body: t("feature2Body") },
+    { icon: "support_agent", title: t("feature3Title"), body: t("feature3Body") },
+  ];
+
+  return (
+    <section className="py-16 lg:py-24 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-12">
+          <p className="text-xs font-bold uppercase tracking-wider text-primary mb-2">
+            {t("featuresEyebrow")}
+          </p>
+          <h2 className="text-3xl md:text-4xl font-black text-text-main mb-3">
+            {t("featuresTitle")}
+          </h2>
+          <p className="text-slate-500 max-w-xl mx-auto">
+            {t("featuresSubtitle")}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {features.map((f, i) => (
+            <div key={i} className="bg-slate-50 rounded-2xl p-6 border border-slate-100 hover:border-primary/30 transition-colors">
+              <div className="inline-flex items-center justify-center size-12 rounded-full bg-primary/10 text-primary mb-4">
+                <span className="material-symbols-outlined text-[26px]">{f.icon}</span>
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 mb-2">{f.title}</h3>
+              <p className="text-sm text-slate-600 leading-relaxed">{f.body}</p>
             </div>
-        </section>
-    );
+          ))}
+        </div>
+      </div>
+    </section>
+  );
 }

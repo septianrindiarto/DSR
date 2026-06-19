@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useToast } from "../components/Toast";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
 import { api, apiCache, swr } from "../lib/api";
@@ -147,6 +148,7 @@ function defaultForm(type) {
 
 export default function AdminDocuments() {
   const { t } = useLanguage();
+  const toast = useToast();
   const [docType, setDocType] = useState("invoice");
   const [form, setForm] = useState(() => defaultForm("invoice"));
   const [orders, setOrders] = useState(() => apiCache.get("documents:orders") || []);
@@ -252,10 +254,10 @@ export default function AdminDocuments() {
   // so it disappears from the pending queue and the invoice number is recorded.
   async function markCurrentInvoiced() {
     if (docType !== "invoice" || !selectedOrderId) {
-      alert("Tidak ada order yang sedang dipilih.");
+      toast.error("Tidak ada order yang sedang dipilih.");
       return;
     }
-    if (!form.invoiceNo) { alert("No. Invoice tidak boleh kosong."); return; }
+    if (!form.invoiceNo) { toast.error("No. Invoice tidak boleh kosong."); return; }
     try {
       await api.sync.markInvoiceGenerated(selectedOrderId, {
         invoiceNumber: form.invoiceNo,
@@ -268,9 +270,9 @@ export default function AdminDocuments() {
       const fresh = await api.sync.ordersNeedingInvoice();
       setPending(Array.isArray(fresh) ? fresh : []);
       apiCache.set("documents:needsInvoice", fresh);
-      alert(`Invoice ${form.invoiceNo} tersimpan ke order. Order dihapus dari antrian "perlu tagihan".`);
+      toast.success(`Invoice ${form.invoiceNo} tersimpan ke order. Order dihapus dari antrian "perlu tagihan".`);
     } catch (err) {
-      alert("Gagal menyimpan: " + err.message);
+      toast.error("Gagal menyimpan: " + err.message);
     }
   }
 
@@ -298,9 +300,9 @@ export default function AdminDocuments() {
       apiCache.set("documents:needsInvoice", fresh);
       setSelectedPending(new Set());
       setShowBulkInvoiceModal(false);
-      alert(`${res.updated} order berhasil ditandai invoice selesai.`);
+      toast.success(`${res.updated} order berhasil ditandai invoice selesai.`);
     } catch (err) {
-      alert("Gagal: " + err.message);
+      toast.error("Gagal: " + err.message);
     } finally {
       setBulkMarking(false);
     }
@@ -315,7 +317,7 @@ export default function AdminDocuments() {
       const msg = ok
         ? `Sync ${summary.status}: orders +${summary.ordersInserted}/~${summary.ordersUpdated}, customers +${summary.customersInserted}, drivers +${summary.driversInserted}, cars +${summary.carsInserted}.`
         : `Sync GAGAL — ${(summary.errors || []).slice(0, 3).map(e => e.message).join(" / ")}`;
-      alert(msg);
+      toast.info(msg);
       apiCache.invalidate("documents:");
       apiCache.invalidate("orders:");
       apiCache.invalidate("sync:");
@@ -328,7 +330,7 @@ export default function AdminDocuments() {
       setPending(Array.isArray(pending2) ? pending2 : []);
       setSyncStatus(status2);
     } catch (err) {
-      alert("Sync error: " + err.message);
+      toast.error("Sync error: " + err.message);
     } finally {
       setSyncing(false);
     }
@@ -517,7 +519,7 @@ export default function AdminDocuments() {
     setCompanyEditMode(comp.id);
   }
   async function saveCompany() {
-    if (!companyForm.name.trim()) { alert("Nama perusahaan wajib diisi."); return; }
+    if (!companyForm.name.trim()) { toast.error("Nama perusahaan wajib diisi."); return; }
     setCompanySaving(true);
     try {
       // Treat empty strings, "-", and "—" as null so they don't trip backend validators
@@ -561,7 +563,7 @@ export default function AdminDocuments() {
           return;
         }
       }
-      alert("Gagal menyimpan: " + err.message);
+      toast.error("Gagal menyimpan: " + err.message);
     } finally {
       setCompanySaving(false);
     }
@@ -575,7 +577,7 @@ export default function AdminDocuments() {
       setCompanies(fresh?.data || []);
       apiCache.set("documents:companies", fresh);
     } catch (err) {
-      alert("Gagal menghapus: " + err.message);
+      toast.error("Gagal menghapus: " + err.message);
     }
   }
 

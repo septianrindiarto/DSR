@@ -6,6 +6,7 @@ import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs } from "../lib/dataFormats";
+import { useToast } from "../components/Toast";
 
 const statusColors = {
   active: "bg-green-100 text-green-700",
@@ -26,6 +27,7 @@ const emptyForm = {
 };
 
 export default function AdminCustomers() {
+  const toastApi = useToast();
   const { t } = useLanguage();
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);

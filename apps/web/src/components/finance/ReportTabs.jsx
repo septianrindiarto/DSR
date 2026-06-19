@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api, apiCache, swr } from "../../lib/api";
 import TablePagination from "../TablePagination";
+import { useToast } from '../Toast';
 
 const fmt = v => Number(v || 0).toLocaleString("id-ID", { minimumFractionDigits: 0 });
 const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
@@ -12,6 +13,7 @@ const toInputDate = d => {
 
 // ─── Jurnal Umum ─────────────────────────────────────────────────────────────
 export function TabJurnal({ params, onClearSuccess }) {
+  const toast = useToast();
   const [data, setData] = useState([]);
   const [total, setTotal] = useState(0);
   const [totalDebit, setTotalDebit] = useState(0);
@@ -97,11 +99,11 @@ export function TabJurnal({ params, onClearSuccess }) {
       )) {
         return handleBulkDelete(true);
       }
-      alert(`${res.deleted} entri dihapus${res.skipped ? `, ${res.skipped} dilewati` : ""}.`);
+      toast.success(`${res.deleted} entri dihapus${res.skipped ? `, ${res.skipped} dilewati` : ""}.`);
       setSelected(new Set());
       apiCache.invalidate("journal");
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
   }
 
   async function handleClearAll() {
@@ -114,14 +116,14 @@ export function TabJurnal({ params, onClearSuccess }) {
       if (p.get('quarter')) periodData.quarter = Number(p.get('quarter'));
       if (p.get('semester')) periodData.semester = Number(p.get('semester'));
       const res = await api.journal.clearAll({ ...periodData, force: clearForce });
-      alert(`${res.deleted} entri berhasil dihapus.`);
+      toast.success(`${res.deleted} entri berhasil dihapus.`);
       setShowClearModal(false);
       setClearForce(false);
       setSelected(new Set());
       apiCache.invalidate("journal");
       load();
       onClearSuccess?.();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
     finally { setClearing(false); }
   }
 
@@ -148,7 +150,7 @@ export function TabJurnal({ params, onClearSuccess }) {
       setEditEntry(null);
       apiCache.invalidate("journal");
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   }
 
@@ -156,10 +158,10 @@ export function TabJurnal({ params, onClearSuccess }) {
     if (!confirm(`Buat entri reversal untuk "${entry.description}"?\n\nDebit dan Kredit akan dibalik. Entri asli tetap tersimpan.`)) return;
     try {
       const res = await api.journal.reverse(entry.id);
-      alert(`Reversal dibuat: ${res.entry?.journalRef || "OK"}`);
+      toast.success(`Reversal dibuat: ${res.entry?.journalRef || "OK"}`);
       apiCache.invalidate("journal");
       load();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast.error(e.message); }
   }
 
   async function handleDelete(entry, force = false) {
@@ -173,7 +175,7 @@ export function TabJurnal({ params, onClearSuccess }) {
         confirm(`Periode untuk entri ini dikunci.\n\nHapus paksa lewati kunci periode?`)) {
         return handleDelete(entry, true);
       }
-      alert(e.message);
+      toast.error(e.message);
     }
   }
 

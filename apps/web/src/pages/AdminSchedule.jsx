@@ -2,10 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr } from "../lib/api";
-
-const API_BASE = "http://localhost:5000";
-const carImgSrc = (url) => (url?.startsWith("/uploads") ? `${API_BASE}${url}` : url);
+import { api, apiCache, swr, carImgSrc } from "../lib/api";
 
 const statusColors = {
   confirmed: "#3B82F6",
@@ -15,7 +12,10 @@ const statusColors = {
 };
 
 export default function AdminSchedule() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  // Audit M-01 i18n sweep: date headers switch locale with the language
+  // toggle. id -> "id-ID" yields "Sen, Sel..."; en -> "en-US" yields "Mon, Tue...".
+  const dateLocale = lang === "en" ? "en-US" : "id-ID";
   const navigate = useNavigate();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState("month");
@@ -58,8 +58,12 @@ export default function AdminSchedule() {
       setSchedule(result?.data || []);
       setLoading(false);
     }).catch(err => {
-      console.error("Failed to load schedule:", err);
-      setLoadError(err?.message || "Gagal memuat jadwal. Coba refresh halaman.");
+      // Keep the raw technical detail in the browser console for triage,
+      // but render only a generic user-friendly banner via setLoadError.
+      // Audit L-17: do not display backend error strings (or migration
+      // commands) to end users.
+      console.error("Failed to load schedule:", err?.message || err, err);
+      setLoadError(true);
       setLoading(false);
     });
   }
@@ -85,8 +89,8 @@ export default function AdminSchedule() {
   }
 
   const days = getDaysInRange();
-  const formatDateShort = (d) => d.toLocaleDateString("id-ID", { weekday: "short", day: "numeric" });
-  const formatMonthYear = (d) => d.toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+  const formatDateShort = (d) => d.toLocaleDateString(dateLocale, { weekday: "short", day: "numeric" });
+  const formatMonthYear = (d) => d.toLocaleDateString(dateLocale, { month: "long", year: "numeric" });
 
   function isBookingOnDay(booking, day) {
     const start = new Date(booking.pickupDate);
@@ -117,7 +121,7 @@ export default function AdminSchedule() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{t("schedule")}</h1>
-          <p className="text-slate-500 text-sm mt-1">Timeline pemesanan dan perawatan armada</p>
+          <p className="text-slate-500 text-sm mt-1">{t('scheduleSubtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex border border-slate-200 rounded-lg overflow-hidden">
@@ -150,19 +154,21 @@ export default function AdminSchedule() {
         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-red-400"></div> {t("maintenance")}</div>
       </div>
 
-      {/* Load-error banner */}
+      {/* Load-error banner
+          Audit L-17: the previous version leaked a developer-only migration
+          command to end users. Replaced with a generic friendly message; the
+          original technical detail is still logged to the browser console
+          for triage. */}
       {loadError && (
         <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 flex items-start gap-3">
           <span className="material-symbols-outlined text-red-500 text-[20px] mt-0.5">error</span>
           <div className="flex-1">
-            <p className="text-sm font-semibold text-red-700">Gagal memuat jadwal mobil</p>
-            <p className="text-xs text-red-600 mt-0.5">{loadError}</p>
-            <p className="text-xs text-red-500 mt-1">
-              Jalankan migrasi database di terminal:{" "}
-              <code className="bg-red-100 px-1 rounded font-mono">cd apps/api &amp;&amp; npm run migrate -- orders_full</code>
+            <p className="text-sm font-semibold text-red-700">{t('loadScheduleFailed')}</p>
+            <p className="text-xs text-red-600 mt-0.5">
+              {t('loadScheduleRetryHint')}
             </p>
           </div>
-          <button onClick={() => { setLoadError(null); loadSchedule(); }} className="text-red-400 hover:text-red-600 cursor-pointer" title="Coba lagi">
+          <button onClick={() => { setLoadError(null); loadSchedule(); }} className="text-red-400 hover:text-red-600 cursor-pointer" title={t('retry')}>
             <span className="material-symbols-outlined text-[20px]">refresh</span>
           </button>
         </div>
@@ -201,8 +207,8 @@ export default function AdminSchedule() {
                           <span className="material-symbols-outlined text-slate-400 text-base">directions_car</span>
                         </div>
                         <div>
-                          <p className="font-semibold text-slate-400 text-xs italic">Tanpa Mobil</p>
-                          <p className="text-[10px] text-slate-300">Belum ditugaskan</p>
+                          <p className="font-semibold text-slate-400 text-xs italic">{t('noCar')}</p>
+                          <p className="text-[10px] text-slate-300">{t('notAssigned')}</p>
                         </div>
                       </div>
                     )}
@@ -236,8 +242,12 @@ export default function AdminSchedule() {
                   })}
                 </tr>
               ))}
-              {filteredSchedule.length === 0 && (
-                <tr><td colSpan={days.length + 1} className="px-5 py-12 text-center text-slate-400">{t("noData")}</td></tr>
+              {schedule.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={days.length + 1} className="px-5 py-12 text-center text-slate-400 text-sm">
+                    {t("noData")}
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>

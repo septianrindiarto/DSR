@@ -65,3 +65,26 @@ export function requireAgent(req, res, next) {
     }
     next();
 }
+
+/**
+ * Generic role guard. Usage: router.use(requireAuth, requireRole(['admin','superadmin']))
+ * or per-route: router.get('/x', requireRole(['superadmin']), handler).
+ * MUST be used after requireAuth — assumes req.user is populated.
+ */
+export function requireRole(allowedRoles) {
+    if (!Array.isArray(allowedRoles) || allowedRoles.length === 0) {
+        throw new Error('requireRole: allowedRoles must be a non-empty array');
+    }
+    return function roleGuard(req, res, next) {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        if (!allowedRoles.includes(req.user.role)) {
+            return res.status(403).json({
+                error: 'Forbidden — your role does not have access to this resource',
+                code: 'ROLE_FORBIDDEN',
+            });
+        }
+        next();
+    };
+}

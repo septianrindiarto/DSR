@@ -1,23 +1,17 @@
 import { Link } from "react-router-dom";
-
-const API_BASE = 'http://localhost:5000';
-const carImgSrc = (url) => url?.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+import { carImgSrc } from "../lib/api";
+import { useLanguage } from "../context/LanguageContext";
+import { formatPriceShort } from "../lib/dataFormats";
 
 export default function CarCard({ car }) {
+  const { t } = useLanguage();
   const features = typeof car.features === 'string' ? JSON.parse(car.features) : (car.features || []);
-
-  const formatPrice = (p) => {
-    const num = Number(p);
-    if (num >= 1000000) return `Rp${num / 1000000}jt`;
-    if (num >= 1000) return `Rp${(num / 1000).toFixed(0)}rb`;
-    return `Rp${num}`;
-  };
 
   const currentPrice = car.price || 0;
   const maxPrice = car.maxPrice;
   const priceDisplay = maxPrice && currentPrice !== maxPrice
-    ? `${formatPrice(currentPrice)} - ${formatPrice(maxPrice)}`
-    : formatPrice(currentPrice);
+    ? `${formatPriceShort(currentPrice)} - ${formatPriceShort(maxPrice)}`
+    : formatPriceShort(currentPrice);
 
   const categoryLabels = { economy: "Ekonomi", standard: "Standar", premium: "Premium", luxury: "Mewah" };
 
@@ -54,24 +48,24 @@ export default function CarCard({ car }) {
             <h3 className="text-xl font-bold text-text-main">{car.name}</h3>
             {car.availableCount > 0 ? (
               <div className="mt-2 text-[10px] font-bold uppercase tracking-wider bg-green-50 text-green-600 px-2.5 py-1 rounded-sm w-fit">
-                Tersedia {car.availableCount} Mobil
+                {t('carsAvailable').replace('{count}', car.availableCount)}
               </div>
             ) : (
               <div className="mt-2 text-[10px] font-bold uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-sm w-fit">
-                Sedang Disewa
+                {t('currentlyRented')}
               </div>
             )}
           </div>
           <div className="flex flex-col items-end">
             <span className="text-lg font-bold text-primary">{priceDisplay}</span>
-            <span className="text-xs text-gray-400">/ hari</span>
+            <span className="text-xs text-gray-400">{t('perDay')}</span>
           </div>
         </div>
 
         <div className="flex items-center gap-4 py-4 border-t border-dashed border-gray-200 mt-2 mb-4">
           <div className="flex items-center gap-1 text-gray-500 text-[13px]">
             <span className="material-symbols-outlined text-[18px]">person</span>
-            <span>{car.capacity} Kursi</span>
+            <span>{car.capacity} {t('seats')}</span>
           </div>
           <div className="flex items-center gap-1 text-gray-500 text-[13px]">
             <span className="material-symbols-outlined text-[18px]">settings</span>
@@ -88,7 +82,7 @@ export default function CarCard({ car }) {
           to={`/car/${car.id}`}
           className="w-full mt-auto py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors flex items-center justify-center gap-2 group-hover:shadow-lg group-hover:shadow-primary/20"
         >
-          Pesan Sekarang
+          {t('orderNow')}
         </Link>
       </div>
     </div>

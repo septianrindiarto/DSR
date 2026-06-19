@@ -1,10 +1,17 @@
 import { Router } from 'express';
 import { scheduleService } from '../services/schedule.service.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
+import { ROLE_GROUPS } from '../services/permissions.service.js';
 
 const router = Router();
 
-router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
+// Schedule is part of the client feature set (SCHEDULE is in
+// CLIENT_ADMIN_FEATURES + CLIENT_USER_FEATURES). Previously this route was
+// admin-only which meant logged-in clients hit a 403 the moment they tapped
+// the Jadwal nav item. The service already accepts scopeUser and applies
+// buildScopeConditions, so opening the guard to ANY_AUTHENTICATED is safe:
+// agency users still see all rows; clients see only org/own rows.
+router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         if (!startDate || !endDate) {
@@ -28,7 +35,7 @@ router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-router.get('/:carId', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/:carId', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         const now = new Date();
