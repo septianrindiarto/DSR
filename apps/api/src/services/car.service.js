@@ -75,6 +75,19 @@ export const carService = {
         return result[0];
     },
 
+    // Bulk status change for several units at once. `status` must be a valid
+    // car_status enum value; invalid values / empty id lists are no-ops.
+    async bulkUpdateStatus(ids, status) {
+        const valid = ['available', 'rented', 'maintenance'];
+        const cleanIds = (Array.isArray(ids) ? ids : []).map(Number).filter(Boolean);
+        if (!cleanIds.length || !valid.includes(status)) return [];
+        const result = await db.update(cars)
+            .set({ status, updatedAt: new Date() })
+            .where(inArray(cars.id, cleanIds))
+            .returning();
+        return result;
+    },
+
     async delete(id) {
         // Nullify carId on completed/cancelled orders so FK doesn't block
         await db.execute(

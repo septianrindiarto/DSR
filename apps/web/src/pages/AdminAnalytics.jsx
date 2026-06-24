@@ -66,7 +66,13 @@ export default function AdminAnalytics() {
   // totalDays falls back to 1 when missing/zero so a one-off entry still nets
   // a full day instead of disappearing silently.
   const yearData = useMemo(() => {
-    const blank = () => ({ totalOrder: 0, totalDays: 0, omset: 0, net: 0 });
+    // Tier 2 multi-vehicle: a booking can span N car rows that share one
+    // order code. We track TWO dimensions explicitly so the table never
+    // conflates them:
+    //   • trips  — distinct bookings (COUNT DISTINCT orderNumber)
+    //   • cars   — vehicle rows rented (COUNT rows) = fleet units out
+    //   • totalDays — car-days (Σ days per row) = total unit utilisation
+    const blank = () => ({ cars: 0, totalDays: 0, omset: 0, net: 0, _codes: new Set() });
 
     // key = `${year}-${month}` — one bucket per requested cell.
     const cells = new Map();
@@ -94,7 +100,8 @@ export default function AdminAnalytics() {
       if (!row) continue; // outside window
 
       const days = Math.max(1, Number(o.totalDays || 0));
-      row.totalOrder += 1;
+      row.cars += 1; // one vehicle row
+      row._codes.add((o.orderNumber || "").trim() || `id:${o.id}`); // one booking
       row.totalDays += days;
       row.omset += Number(o.totalPrice || 0);
       row.net += resolveCarPrice(o) * days;
@@ -104,16 +111,20 @@ export default function AdminAnalytics() {
       const rows = monthWindow.map(({ year, month }) => {
         const y = year + yearOffset;
         const r = cells.get(`${y}-${month}`) || blank();
-        return { monthLabel: `${MONTHS_ID[month]} ${y}`, ...r };
+        // Resolve the distinct-code Set into a trip count. A booking's rows
+        // share pickupDate, so all its rows fall in the same month cell —
+        // summing per-month trips across the panel needs no cross-month dedup.
+        return { monthLabel: `${MONTHS_ID[month]} ${y}`, trips: r._codes.size, cars: r.cars, totalDays: r.totalDays, omset: r.omset, net: r.net };
       });
       const totals = rows.reduce(
         (acc, r) => ({
-          totalOrder: acc.totalOrder + r.totalOrder,
+          trips: acc.trips + r.trips,
+          cars: acc.cars + r.cars,
           totalDays: acc.totalDays + r.totalDays,
           omset: acc.omset + r.omset,
           net: acc.net + r.net,
         }),
-        { totalOrder: 0, totalDays: 0, omset: 0, net: 0 }
+        { trips: 0, cars: 0, totalDays: 0, omset: 0, net: 0 }
       );
       return { rows, totals };
     };
@@ -286,7 +297,8 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
         <thead>
           <tr className="bg-white border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
             <th className="text-left font-semibold px-5 py-2.5">{t("month")}</th>
-            <th className="text-right font-semibold px-3 py-2.5">Total Order</th>
+            <th className="text-right font-semibold px-3 py-2.5" title={t("tripsBookedFull")}>{t("tripsBooked")}</th>
+            <th className="text-right font-semibold px-3 py-2.5" title={t("carsRentedFull")}>{t("carsRented")}</th>
             <th className="text-right font-semibold px-3 py-2.5">{t("sumDays")}</th>
             <th className="text-right font-semibold px-3 py-2.5">{t("omset")}</th>
             <th className="text-right font-semibold px-5 py-2.5">{t("net")}</th>
@@ -295,7 +307,7 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
         <tbody className="divide-y divide-slate-100">
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={5} className="px-5 py-8 text-center text-slate-400 text-sm">
+              <td colSpan={6} className="px-5 py-8 text-center text-slate-400 text-sm">
                 {loading ? "Memuat..." : t("noData")}
               </td>
             </tr>
@@ -303,7 +315,8 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
             rows.map((r) => (
               <tr key={r.monthLabel} className="hover:bg-slate-50/60 transition-colors">
                 <td className="px-5 py-2.5 font-medium text-slate-800 whitespace-nowrap">{r.monthLabel}</td>
-                <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.totalOrder)}</td>
+                <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.trips)}</td>
+                <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.cars)}</td>
                 <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.totalDays)}</td>
                 <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.omset)}</td>
                 <td className="px-5 py-2.5 text-right text-slate-900 font-mono font-semibold">{fmt(r.net)}</td>
@@ -314,7 +327,8 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
         <tfoot>
           <tr className="bg-slate-50 border-t-2 border-slate-300 font-bold text-slate-900">
             <td className="px-5 py-3">{t("total")}</td>
-            <td className="px-3 py-3 text-right font-mono">{fmt(totals.totalOrder)}</td>
+            <td className="px-3 py-3 text-right font-mono">{fmt(totals.trips)}</td>
+            <td className="px-3 py-3 text-right font-mono">{fmt(totals.cars)}</td>
             <td className="px-3 py-3 text-right font-mono">{fmt(totals.totalDays)}</td>
             <td className="px-3 py-3 text-right font-mono">{fmt(totals.omset)}</td>
             <td className="px-5 py-3 text-right font-mono">{fmt(totals.net)}</td>

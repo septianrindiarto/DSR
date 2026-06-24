@@ -15,7 +15,8 @@
     "db:seed": "node src/seed.js",
     "db:seed:reset": "node src/seed-reset.js",
     "migrate": "node src/scripts/migrate.js",
-    "sync:rekap": "node src/scripts/sync-rekap.js"
+    "sync:rekap": "node src/scripts/sync-rekap.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",

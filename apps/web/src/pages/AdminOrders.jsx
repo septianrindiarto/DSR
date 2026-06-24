@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { useToast } from "../components/Toast";
 import { useSearchParams } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
@@ -332,6 +332,22 @@ export default function AdminOrders() {
   const columnPickerRef = useRef(null);
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  // Tier 2 multi-vehicle: which booking groups (by orderNumber) are expanded.
+  // A Set of orderNumbers; absence = collapsed. Multi-car bookings collapse
+  // to one summary row by default to keep the Rekap compact.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const toggleGroup = (code) => setExpandedGroups(prev => {
+    const next = new Set(prev);
+    if (next.has(code)) next.delete(code); else next.add(code);
+    return next;
+  });
+  // Tier 2: per-car driver assignment + whole-booking cancel target the rows
+  // of one booking group. Each holds the group object (or null when closed).
+  // Multi-car booking row controls: one "Action" form (car + driver + price),
+  // plus cancel and delete for the whole booking.
+  const [manageBookingTarget, setManageBookingTarget] = useState(null);
+  const [cancelBookingTarget, setCancelBookingTarget] = useState(null);
+  const [deleteBookingTarget, setDeleteBookingTarget] = useState(null);
 
   // Re-fetch only on filter/sort changes — not on every keystroke
   useEffect(() => { loadOrders(); }, [statusFilter, sortBy, sortOrder]);
@@ -476,6 +492,41 @@ export default function AdminOrders() {
     } catch (error) { toast.error(error.message); }
   }
 
+  // Tier 2: save the combined "Action" form — car + driver + price per row.
+  async function handleManageBookingSave(items) {
+    try {
+      const res = await api.orders.updateBookingItems(items);
+      setManageBookingTarget(null);
+      invalidateOrders();
+      loadOrders();
+      toast.success(`Booking diperbarui (${res?.updated ?? items.length} kendaraan).`);
+    } catch (error) { toast.error(error.message); }
+  }
+
+  // Tier 2: delete an entire booking (all cars sharing the order code).
+  async function handleDeleteBooking() {
+    if (!deleteBookingTarget) return;
+    try {
+      const res = await api.orders.removeBooking(deleteBookingTarget.orderNumber);
+      setDeleteBookingTarget(null);
+      invalidateOrders();
+      loadOrders();
+      toast.success(`Booking ${deleteBookingTarget.orderNumber} dihapus (${res?.deleted ?? 0} kendaraan).`);
+    } catch (error) { toast.error(error.message); }
+  }
+
+  // Tier 2: cancel an entire booking (all cars sharing the order code).
+  async function handleCancelBooking() {
+    if (!cancelBookingTarget) return;
+    try {
+      const res = await api.orders.cancelBooking(cancelBookingTarget.orderNumber);
+      setCancelBookingTarget(null);
+      invalidateOrders();
+      loadOrders();
+      toast.success(`Booking ${cancelBookingTarget.orderNumber} dibatalkan (${res?.cancelled ?? 0} kendaraan).`);
+    } catch (error) { toast.error(error.message); }
+  }
+
   function handleSort(field) {
     if (sortBy === field) setSortOrder(sortOrder === "asc" ? "desc" : "asc");
     else { setSortBy(field); setSortOrder("asc"); }
@@ -545,6 +596,134 @@ export default function AdminOrders() {
     }
   }
 
+  // Render a cell for a multi-car booking's collapsed SUMMARY row.
+  //   • kodeTransaksi carries the expand/collapse toggle + "N mobil" badge
+  //   • numeric add-on columns (price, bailout, inap, lembur) are summed
+  //   • per-car columns (mobil, plat, driver) collapse to a count / dash
+  //   • columns that vary across cars (paket) show "Beragam" when they differ
+  //   • everything else is shared across the booking → read off the first row
+  function renderGroupCell(col, group, rowIndex) {
+    const rows = group.rows;
+    const first = rows[0];
+    const sum = (sel) => rows.reduce((acc, r) => acc + Number(sel(r) || 0), 0);
+    const allSame = (sel) => {
+      const v = rows.map(r => (sel(r) ?? "").toString().trim());
+      return v.every(x => x === v[0]) ? v[0] : null;
+    };
+    const expanded = expandedGroups.has(group.orderNumber);
+
+    switch (col.key) {
+      case "no":
+        return <span className="text-slate-500 font-medium">{rowIndex + 1}</span>;
+      case "kodeTransaksi":
+        return (
+          <button
+            type="button"
+            onClick={() => toggleGroup(group.orderNumber)}
+            className="inline-flex items-center gap-1.5 cursor-pointer group/btn"
+            title={expanded ? "Tutup rincian" : "Lihat rincian kendaraan"}
+          >
+            <span className={`material-symbols-outlined text-[18px] text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`}>
+              chevron_right
+            </span>
+            <span className="font-mono text-xs font-bold text-primary group-hover/btn:underline">{group.orderNumber}</span>
+            <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-bold whitespace-nowrap">
+              {rows.length} mobil
+            </span>
+          </button>
+        );
+      case "mobil":
+        return <span className="text-slate-500 text-xs italic">{rows.length} kendaraan</span>;
+      case "plat":
+      case "driver":
+        return <span className="text-slate-400">—</span>;
+      case "kontrakHarga":
+        return <span className="font-bold text-slate-800">{formatPrice(sum(r => r.totalPrice))}</span>;
+      case "bailout": {
+        const total = sum(r => r.bailout);
+        return <span className="text-slate-700">{total > 0 ? formatPrice(total) : "-"}</span>;
+      }
+      case "inap": {
+        const total = sum(r => r.overnightNights);
+        return <span className="text-slate-600">{total || "-"}</span>;
+      }
+      case "lembur": {
+        const total = sum(r => r.overtimeHours);
+        return <span className="text-slate-600">{total || "-"}</span>;
+      }
+      case "paket": {
+        const same = allSame(r => r.package);
+        return <span className="text-slate-700">{same ? (same || "-") : "Beragam"}</span>;
+      }
+      case "status": {
+        const same = allSame(r => r.status);
+        if (same) return <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[same]}`}>{t(same)}</span>;
+        return <span className="text-slate-500 text-xs italic">Campuran</span>;
+      }
+      // Shared trip-level fields — identical across every car in the booking.
+      default:
+        return renderCell(col, first, rowIndex);
+    }
+  }
+
+  // The per-row action buttons (view / edit / delete). Shared by single rows
+  // and the per-car child rows of a multi-car booking.
+  function renderActionsCell(order) {
+    return (
+      <td className="px-3 py-3 text-center align-middle">
+        <div className="flex items-center justify-center gap-1">
+          <button onClick={() => { ensureDriversAndCars(); setSelectedOrder(order); }} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer" title={t("details")}>
+            <span className="material-symbols-outlined text-[18px]">visibility</span>
+          </button>
+          <button onClick={() => { ensureDriversAndCars(); setEditOrder(order); }} className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer" title={t("edit")}>
+            <span className="material-symbols-outlined text-[18px]">edit</span>
+          </button>
+          <button onClick={() => setDeleteTarget(order)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer" title={t("delete")}>
+            <span className="material-symbols-outlined text-[18px]">delete</span>
+          </button>
+        </div>
+      </td>
+    );
+  }
+
+  // Render one data row. Used for standalone bookings AND for the per-car
+  // child rows revealed under a multi-car summary. Child rows are indented
+  // and show a connector glyph in the code column instead of repeating the
+  // shared booking code.
+  function renderDataRow(order, displayIndex, opts = {}) {
+    const { isChild = false, childLabel = null } = opts;
+    return (
+      <tr
+        key={order.id}
+        className={`transition-colors ${isChild ? "bg-slate-50/30 hover:bg-slate-100/50" : "hover:bg-slate-50/60"}`}
+      >
+        {visibleCols.map(col => {
+          const alignCls = col.align === "right" ? "text-right tabular-nums"
+            : col.align === "left" ? "text-left"
+              : "text-center";
+          let content;
+          if (isChild && col.key === "no") {
+            content = <span className="text-slate-300 text-xs">{childLabel}</span>;
+          } else if (isChild && col.key === "kodeTransaksi") {
+            content = (
+              <span className="inline-flex items-center gap-1 pl-4 text-slate-400">
+                <span className="material-symbols-outlined text-[16px]">subdirectory_arrow_right</span>
+              </span>
+            );
+          } else {
+            content = renderCell(col, order, displayIndex);
+          }
+          return (
+            <td key={col.key} className={`px-3 py-3 align-middle ${alignCls}`}>
+              {content}
+            </td>
+          );
+        })}
+        {renderActionsCell(order)}
+      </tr>
+    );
+  }
+
   // Header label — supports both translated (labelKey) and literal (label)
   // columns. Literal labels are used for the new client-view columns whose
   // Indonesian names aren't part of the shared i18n bundle yet.
@@ -606,8 +785,48 @@ export default function AdminOrders() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders, search]);
 
-  // Pagination — auto-resets to page 1 when search/filter/sort change
-  const { page, setPage, pageSize, setPageSize, paged: pagedOrders } = usePagination(filteredOrders, {
+  // ─── Tier 2 multi-vehicle grouping ───────────────────────────────────
+  // Rows sharing an orderNumber are one booking (e.g. C073 across 3 cars).
+  // We group them so the Rekap shows ONE summary row per booking that
+  // expands to reveal the per-car child rows. Rows without a code, or a
+  // code that appears only once, are their own single-row "group" and
+  // render exactly like before. Grouping is by code regardless of sort
+  // order, so a multi-car booking stays together even when the list is
+  // sorted by a per-car field like price.
+  const groupedOrders = useMemo(() => {
+    const map = new Map();
+    const seq = [];
+    for (const o of filteredOrders) {
+      const code = (o.orderNumber || "").trim();
+      const key = code ? `code:${code}` : `id:${o.id}`;
+      if (!map.has(key)) { map.set(key, []); seq.push(key); }
+      map.get(key).push(o);
+    }
+    return seq.map(key => {
+      const rows = map.get(key);
+      return {
+        key,
+        orderNumber: rows[0].orderNumber,
+        rows,
+        isGroup: rows.length > 1,
+      };
+    });
+  }, [filteredOrders]);
+
+  // Unfiltered booking count (for the "terfilter dari N" pagination label).
+  const totalGroupCount = useMemo(() => {
+    const codes = new Set();
+    let singles = 0;
+    for (const o of orders) {
+      const code = (o.orderNumber || "").trim();
+      if (code) codes.add(code); else singles++;
+    }
+    return codes.size + singles;
+  }, [orders]);
+
+  // Pagination operates on BOOKINGS (groups), not individual rows, so a
+  // multi-car booking never splits across a page boundary.
+  const { page, setPage, pageSize, setPageSize, paged: pagedGroups } = usePagination(groupedOrders, {
     storageKey: "dsr:orders:pageSize",
     deps: [search, statusFilter, sortBy, sortOrder],
   });
@@ -860,12 +1079,12 @@ export default function AdminOrders() {
       </div>
 
       {/* Sticky pagination — stays in view while scrolling the table */}
-      {filteredOrders.length > 0 && (
+      {groupedOrders.length > 0 && (
         <TablePagination
           page={page}
           pageSize={pageSize}
-          totalCount={orders.length}
-          filteredCount={filteredOrders.length}
+          totalCount={totalGroupCount}
+          filteredCount={groupedOrders.length}
           onPageChange={setPage}
           onPageSizeChange={setPageSize}
         />
@@ -894,39 +1113,70 @@ export default function AdminOrders() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {pagedOrders.map((order, idx) => (
-                <tr key={order.id} className="hover:bg-slate-50/60 transition-colors">
-                  {visibleCols.map(col => {
-                    // Headers always centered; cells align by data type:
-                    //   right → numbers (line up digits), left → text (anchor for reading)
-                    const alignCls = col.align === "right" ? "text-right tabular-nums"
-                      : col.align === "left" ? "text-left"
-                        : "text-center";
-                    return (
-                      <td
-                        key={col.key}
-                        className={`px-3 py-3 align-middle ${alignCls}`}
-                      >
-                        {renderCell(col, order, (page - 1) * pageSize + idx)}
+              {pagedGroups.map((group, gIdx) => {
+                const displayIndex = (page - 1) * pageSize + gIdx;
+
+                // Standalone booking (1 car or no shared code) → normal row.
+                if (!group.isGroup) {
+                  return renderDataRow(group.rows[0], displayIndex);
+                }
+
+                // Multi-car booking → a clickable summary row that expands
+                // into one child row per car.
+                const expanded = expandedGroups.has(group.orderNumber);
+                return (
+                  <Fragment key={group.key}>
+                    <tr
+                      className="bg-primary/5 hover:bg-primary/10 transition-colors cursor-pointer"
+                      onClick={() => toggleGroup(group.orderNumber)}
+                    >
+                      {visibleCols.map(col => {
+                        const alignCls = col.align === "right" ? "text-right tabular-nums"
+                          : col.align === "left" ? "text-left"
+                            : "text-center";
+                        return (
+                          <td key={col.key} className={`px-3 py-3 align-middle ${alignCls}`}>
+                            {renderGroupCell(col, group, displayIndex)}
+                          </td>
+                        );
+                      })}
+                      <td className="px-3 py-3 text-center align-middle">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); ensureDriversAndCars(); setManageBookingTarget(group); }}
+                            className="px-2 py-1 rounded-lg hover:bg-primary/10 text-primary cursor-pointer inline-flex items-center gap-1 text-xs font-medium"
+                            title="Atur unit, driver, dan harga"
+                          >
+                            <span className="material-symbols-outlined text-[18px]">tune</span>
+                            Action
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setCancelBookingTarget(group); }}
+                            className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer"
+                            title="Batalkan seluruh booking"
+                          >
+                            <span className="material-symbols-outlined text-[18px]">block</span>
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteBookingTarget(group); }}
+                            className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer"
+                            title="Hapus seluruh booking"
+                          >
+                            <span className="material-symbols-outlined text-[18px]">delete</span>
+                          </button>
+                        </div>
                       </td>
-                    );
-                  })}
-                  <td className="px-3 py-3 text-center align-middle">
-                    <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => { ensureDriversAndCars(); setSelectedOrder(order); }} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer" title={t("details")}>
-                        <span className="material-symbols-outlined text-[18px]">visibility</span>
-                      </button>
-                      <button onClick={() => { ensureDriversAndCars(); setEditOrder(order); }} className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer" title={t("edit")}>
-                        <span className="material-symbols-outlined text-[18px]">edit</span>
-                      </button>
-                      <button onClick={() => setDeleteTarget(order)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer" title={t("delete")}>
-                        <span className="material-symbols-outlined text-[18px]">delete</span>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredOrders.length === 0 && (
+                    </tr>
+                    {expanded && group.rows.map((order, cIdx) =>
+                      renderDataRow(order, displayIndex, {
+                        isChild: true,
+                        childLabel: `${displayIndex + 1}.${cIdx + 1}`,
+                      })
+                    )}
+                  </Fragment>
+                );
+              })}
+              {groupedOrders.length === 0 && (
                 <tr><td colSpan={visibleCols.length + 1} className="px-5 py-12 text-center text-slate-400">
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
@@ -981,6 +1231,73 @@ export default function AdminOrders() {
           onSave={handleCreateSave}
           t={t}
         />
+      )}
+
+      {/* Tier 2: Combined "Action" form — set car, driver, price per vehicle */}
+      {manageBookingTarget && (
+        <ManageBookingModal
+          group={manageBookingTarget}
+          cars={cars}
+          drivers={drivers}
+          onClose={() => setManageBookingTarget(null)}
+          onSave={handleManageBookingSave}
+        />
+      )}
+
+      {/* Tier 2: Delete whole booking confirm */}
+      {deleteBookingTarget && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setDeleteBookingTarget(null)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="p-5">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-red-600">delete</span>
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">Hapus Booking</h3>
+              </div>
+              <p className="text-sm text-slate-600 mb-4">
+                Hapus permanen seluruh booking <span className="font-mono font-bold text-primary">{deleteBookingTarget.orderNumber}</span>
+                {" "}({deleteBookingTarget.rows.length} kendaraan)? Tindakan ini tidak dapat dibatalkan.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setDeleteBookingTarget(null)} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
+                  {t("cancel")}
+                </button>
+                <button onClick={handleDeleteBooking} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer">
+                  {t("delete")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tier 2: Cancel whole booking confirm */}
+      {cancelBookingTarget && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setCancelBookingTarget(null)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="p-5">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-red-600">block</span>
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">Batalkan Booking</h3>
+              </div>
+              <p className="text-sm text-slate-600 mb-4">
+                Batalkan seluruh booking <span className="font-mono font-bold text-primary">{cancelBookingTarget.orderNumber}</span>
+                {" "}({cancelBookingTarget.rows.length} kendaraan)? Baris yang sudah selesai tidak terpengaruh.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setCancelBookingTarget(null)} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
+                  Kembali
+                </button>
+                <button onClick={handleCancelBooking} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer">
+                  Batalkan Semua
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Confirm Modal */}
@@ -1104,6 +1421,159 @@ function DetailModal({ order, drivers, onClose, onStatusChange, onAssignDriver, 
               </button>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Tier 2: Manage Booking Modal — the "Action" form ────────────────
+// One form for a multi-vehicle booking: each car row gets a unit (fleet car)
+// dropdown, a driver dropdown, and a price input. Saved together in one call.
+// Picking a unit auto-fills the price from the unit's daily rate × rental days
+// when the price field is still empty/zero, but never overwrites a price the
+// admin has already typed.
+function ManageBookingModal({ group, cars = [], drivers = [], onClose, onSave }) {
+  const totalDays = Number(group.rows[0]?.totalDays || 1) || 1;
+  const carPrice = (carId) => {
+    const c = cars.find(x => String(x.id) === String(carId));
+    return c ? Number(c.price || 0) : 0;
+  };
+
+  // Only offer usable units/drivers: cars not in maintenance, drivers that are
+  // active. The currently-assigned unit/driver of a row is always kept in its
+  // own dropdown (even if it later went to maintenance / inactive) so an
+  // existing assignment never disappears from view.
+  const selectableCars = cars.filter(c => c.status !== "maintenance");
+  const selectableDrivers = drivers.filter(d => !d.status || d.status === "active");
+  const carOptionsFor = (o) => {
+    const cur = o.car;
+    return (cur && !selectableCars.some(c => c.id === cur.id)) ? [cur, ...selectableCars] : selectableCars;
+  };
+  const driverOptionsFor = (o) => {
+    const cur = o.driver;
+    return (cur && !selectableDrivers.some(d => d.id === cur.id)) ? [cur, ...selectableDrivers] : selectableDrivers;
+  };
+
+  const [rows, setRows] = useState(() =>
+    group.rows.map(o => ({
+      orderId: o.id,
+      carId: o.carId || "",
+      driverId: o.driverId || "",
+      totalPrice: o.totalPrice != null ? String(Number(o.totalPrice) || 0) : "",
+    }))
+  );
+
+  const setRow = (orderId, patch) =>
+    setRows(prev => prev.map(r => r.orderId === orderId ? { ...r, ...patch } : r));
+
+  const onCarChange = (orderId, carId) => {
+    setRows(prev => prev.map(r => {
+      if (r.orderId !== orderId) return r;
+      const next = { ...r, carId };
+      // Auto-fill price only when it's currently blank/zero.
+      const cur = Number(r.totalPrice || 0);
+      if (carId && !(cur > 0)) {
+        next.totalPrice = String(carPrice(carId) * totalDays);
+      }
+      return next;
+    }));
+  };
+
+  // Requested category parsed from the row notes, to guide unit selection.
+  const requestedCategory = (notes) => {
+    const m = /Permintaan Kendaraan:\s*([^\n(]+)/i.exec(notes || "");
+    return m ? m[1].trim() : "";
+  };
+
+  function handleSave() {
+    onSave(rows.map(r => ({
+      orderId: r.orderId,
+      carId: r.carId ? Number(r.carId) : null,
+      driverId: r.driverId ? Number(r.driverId) : null,
+      totalPrice: r.totalPrice === "" ? null : Number(r.totalPrice) || 0,
+    })));
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-slate-100">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">
+              Atur Booking — <span className="font-mono text-primary">{group.orderNumber}</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">{group.rows.length} kendaraan · {totalDays} hari</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {group.rows.map((o, i) => {
+            const r = rows.find(x => x.orderId === o.id);
+            const cat = requestedCategory(o.notes);
+            return (
+              <div key={o.id} className="border border-slate-200 rounded-lg p-3 bg-slate-50/50">
+                <p className="text-xs font-bold text-slate-600 mb-2">
+                  Kendaraan #{i + 1}
+                  {cat && <span className="ml-2 font-normal text-slate-400">Permintaan: {cat}</span>}
+                  {o.destination && <span className="ml-2 font-normal text-slate-400">· {o.destination}</span>}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Unit / Mobil</label>
+                    <select
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm cursor-pointer"
+                      value={r?.carId || ""}
+                      onChange={e => onCarChange(o.id, e.target.value)}
+                    >
+                      <option value="">-- Tanpa unit --</option>
+                      {carOptionsFor(o).map(c => (
+                        <option key={c.id} value={c.id}>
+                          {`${c.brand || ""} ${c.name || ""}`.trim()}{c.licensePlate ? ` (${c.licensePlate})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Driver</label>
+                    <select
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm cursor-pointer"
+                      value={r?.driverId || ""}
+                      onChange={e => setRow(o.id, { driverId: e.target.value })}
+                    >
+                      <option value="">-- Tanpa driver --</option>
+                      {driverOptionsFor(o).map(d => (
+                        <option key={d.id} value={d.id}>{d.name}{d.phone ? ` (${d.phone})` : ""}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Harga (Rp)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      value={r?.totalPrice ?? ""}
+                      onChange={e => setRow(o.id, { totalPrice: e.target.value })}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2 justify-end p-5 border-t border-slate-100">
+          <button onClick={onClose} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
+            Batal
+          </button>
+          <button onClick={handleSave} className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">
+            Simpan
+          </button>
         </div>
       </div>
     </div>

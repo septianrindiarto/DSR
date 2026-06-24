@@ -166,7 +166,7 @@ export const id = {
     avgRentalDays: 'Rata-rata Durasi Sewa',
     avgOrderValue: 'Rata-rata Nilai Order',
     yoyComparison: 'Perbandingan Tahun Ini vs Tahun Lalu',
-    yoyComparisonSubtitle: 'Total order, omset, dan net per bulan',
+    yoyComparisonSubtitle: 'Trip dipesan, unit disewa, omset, dan net per bulan',
     topContributors: '5 Kontributor Terbesar',
     topContributorsSubtitle: 'Pelanggan dengan kontribusi omset tertinggi',
     omset: 'Omset',
@@ -174,6 +174,10 @@ export const id = {
     total: 'Total',
     month: 'Bulan',
     sumDays: 'Total Hari',
+    tripsBooked: 'Trip',
+    carsRented: 'Unit',
+    tripsBookedFull: 'Trip Dipesan',
+    carsRentedFull: 'Unit Disewa',
 
     // Auth
     loginTitle: 'Portal Admin',

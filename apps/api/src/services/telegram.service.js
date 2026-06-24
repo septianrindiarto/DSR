@@ -120,14 +120,34 @@ function fmtDate(d) {
     } catch { return '-'; }
 }
 
+// Render a single car as a one-line label: "Toyota Avanza B 1234 XYZ".
+// `cars` lookup (carId -> car) is optional; when a row already carries its
+// own `car` object we use that first.
+function carLabel(car) {
+    if (!car) return null;
+    const name = `${esc(car.brand || '')} ${esc(car.name || '')}`.trim();
+    const plate = car.licensePlate ? ` <code>${esc(car.licensePlate)}</code>` : '';
+    return (name || plate) ? `${name}${plate}` : null;
+}
+
 /**
  * Build a rich order-notification message and push it to the admin.
  * Source is one of: 'landing' | 'dashboard' | 'agency' | 'rekap'.
+ *
+ * Tier 2 multi-vehicle: callers may pass an `orders` array (all rows share
+ * one orderNumber). When 2+ rows are present, the message lists each vehicle
+ * as its own block and shows a grand total. When only one row is present
+ * (or only the legacy `order` is passed), the original single-car layout is
+ * used. A per-row `car` object is read first; `carsById` is an optional
+ * fallback map (carId -> car) for rows that only carry carId.
+ *
  * Never throws.
  */
-export async function notifyOrderCreated({ order, car, customer, source = 'landing' }) {
-    try {
-        const sourceLabels = {
+// Pure message builder — no I/O, exported so it can be unit-tested without a
+// Telegram token or network. Returns the HTML string, or null when there are
+// no order rows to render.
+export function buildOrderMessage({ order, orders, car, carsById, customer, source = 'landing' }) {
+    const sourceLabels = {
             landing:   'Landing Page',
             dashboard: 'Dashboard Client',
             agency:    'Admin (manual)',
@@ -135,18 +155,31 @@ export async function notifyOrderCreated({ order, car, customer, source = 'landi
         };
         const sourceLabel = sourceLabels[source] || String(source);
 
-        const carLine = car
-            ? `${esc(car.brand || '')} ${esc(car.name || '')}`.trim() + (car.licensePlate ? ` <code>${esc(car.licensePlate)}</code>` : '')
-            : '-';
+        // Normalise to a rows array. Prefer the explicit `orders` array;
+        // fall back to the single `order`. Filter out null/undefined.
+        const rows = (Array.isArray(orders) && orders.length > 0 ? orders : [order]).filter(Boolean);
+        if (rows.length === 0) {
+            return null;
+        }
 
+        const lookup = carsById instanceof Map ? carsById : null;
+        const resolveCar = (row) =>
+            row?.car || (lookup && row?.carId != null ? lookup.get(row.carId) : null) || null;
+
+        const head = rows[0];
         const customerLine = customer?.name ? esc(customer.name) : '-';
         const companyLine = customer?.companyName ? esc(customer.companyName) : 'Private';
         const phone = customer?.phone || customer?.whatsapp || '';
         const waPath = waNumber(phone);
+        const isMulti = rows.length > 1;
 
         const lines = [];
-        lines.push(`🚗 <b>Order baru</b> via ${esc(sourceLabel)}`);
-        if (order?.orderNumber) lines.push(`<code>${esc(order.orderNumber)}</code>`);
+        if (isMulti) {
+            lines.push(`🚗 <b>Order baru</b> (${rows.length} kendaraan) via ${esc(sourceLabel)}`);
+        } else {
+            lines.push(`🚗 <b>Order baru</b> via ${esc(sourceLabel)}`);
+        }
+        if (head?.orderNumber) lines.push(`<code>${esc(head.orderNumber)}</code>`);
         lines.push('');
         lines.push(`<b>Nama:</b> ${customerLine}`);
         lines.push(`<b>Perusahaan:</b> ${companyLine}`);
@@ -157,19 +190,68 @@ export async function notifyOrderCreated({ order, car, customer, source = 'landi
                 lines.push(`<b>Kontak:</b> ${esc(phone)}`);
             }
         }
-        lines.push('');
-        lines.push(`<b>Kendaraan:</b> ${carLine}`);
-        if (order?.package) lines.push(`<b>Paket:</b> ${esc(order.package)}`);
-        if (order?.destination) lines.push(`<b>Tujuan:</b> ${esc(order.destination)}`);
-        if (order?.pickupLocation) lines.push(`<b>Penjemputan:</b> ${esc(order.pickupLocation)}`);
-        lines.push(`<b>Tanggal:</b> ${fmtDate(order?.pickupDate)} - ${fmtDate(order?.returnDate)}`);
-        if (order?.totalDays) lines.push(`<b>Lama:</b> ${order.totalDays} hari`);
-        if (order?.totalPrice) lines.push(`<b>Estimasi:</b> ${fmtRp(order.totalPrice)}`);
-        if (order?.notes) lines.push(`<b>Catatan:</b> ${esc(order.notes)}`);
+
+        // Trip-level fields shared across all rows (read off the head row).
+        if (head?.destination) lines.push(`<b>Tujuan:</b> ${esc(head.destination)}`);
+        if (head?.pickupLocation) lines.push(`<b>Penjemputan:</b> ${esc(head.pickupLocation)}`);
+        lines.push(`<b>Tanggal:</b> ${fmtDate(head?.pickupDate)} - ${fmtDate(head?.returnDate)}`);
+        if (head?.totalDays) lines.push(`<b>Lama:</b> ${head.totalDays} hari`);
+
+        if (isMulti) {
+            // One block per vehicle. Use the per-row car object, the carsById
+            // fallback, or the single `car` arg as a last resort for row 0.
+            lines.push('');
+            lines.push(`<b>Kendaraan (${rows.length}):</b>`);
+            rows.forEach((row, idx) => {
+                const rowCar = resolveCar(row) || (idx === 0 ? car : null);
+                const label = carLabel(rowCar) || (row?.package ? esc(row.package) : 'Kategori menyusul');
+                const bits = [];
+                if (row?.package) bits.push(`paket ${esc(row.package)}`);
+                if (Number(row?.overnightNights)) bits.push(`inap ${Number(row.overnightNights)}`);
+                if (Number(row?.overtimeHours)) bits.push(`lembur ${Number(row.overtimeHours)} jam`);
+                const detail = bits.length ? ` <i>(${bits.join(', ')})</i>` : '';
+                const price = row?.totalPrice ? ` — ${fmtRp(row.totalPrice)}` : '';
+                lines.push(`${idx + 1}. ${label}${detail}${price}`);
+            });
+            const grand = rows.reduce((sum, r) => sum + Number(r?.totalPrice || 0), 0);
+            if (grand > 0) {
+                lines.push('');
+                lines.push(`<b>Total estimasi:</b> ${fmtRp(grand)}`);
+            }
+        } else {
+            // Single-car layout (unchanged from the original).
+            const rowCar = resolveCar(head) || car;
+            lines.push('');
+            lines.push(`<b>Kendaraan:</b> ${carLabel(rowCar) || '-'}`);
+            if (head?.package) lines.push(`<b>Paket:</b> ${esc(head.package)}`);
+            if (head?.totalPrice) lines.push(`<b>Estimasi:</b> ${fmtRp(head.totalPrice)}`);
+        }
+
+        // Notes: dedupe across rows (multi-car bookings repeat trip notes).
+        const noteSet = [];
+        for (const r of rows) {
+            const n = (r?.notes || '').trim();
+            if (n && !noteSet.includes(n)) noteSet.push(n);
+        }
+        if (noteSet.length) {
+            lines.push('');
+            lines.push(`<b>Catatan:</b> ${esc(noteSet.join(' | '))}`);
+        }
+
         lines.push('');
         lines.push(`Status awal: <i>pending</i>. Buka admin panel untuk konfirmasi.`);
 
-        const text = lines.join('\n');
+        return lines.join('\n');
+}
+
+/**
+ * Build the order-notification message and push it to the admin. Thin wrapper
+ * around buildOrderMessage() + notifyAdmin(). Never throws.
+ */
+export async function notifyOrderCreated(args) {
+    try {
+        const text = buildOrderMessage(args);
+        if (text == null) return { ok: false, reason: 'no_orders', results: [] };
         return await notifyAdmin(text, { parseMode: 'HTML', disablePreview: true });
     } catch (err) {
         console.warn('[telegram] notifyOrderCreated threw:', err?.message || err);
@@ -181,4 +263,6 @@ export default {
     isTelegramConfigured,
     notifyAdmin,
     notifyOrderCreated,
+    buildOrderMessage,
 };
+// Tier 2 multi-vehicle: notifyOrderCreated renders N cars in one message.

@@ -153,6 +153,11 @@ export default function AdminDocuments() {
   const [form, setForm] = useState(() => defaultForm("invoice"));
   const [orders, setOrders] = useState(() => apiCache.get("documents:orders") || []);
   const [selectedOrderId, setSelectedOrderId] = useState("");
+  // Tier 2 multi-vehicle: the ids of EVERY order row covered by the invoice
+  // currently in the form (a multi-car booking shares one code across N rows).
+  // Used so "Tandai Invoice Selesai" marks the whole booking, not just the
+  // single row the user happened to click.
+  const [invoiceOrderIds, setInvoiceOrderIds] = useState([]);
   const [showOrderPicker, setShowOrderPicker] = useState(false);
   const [orderSearch, setOrderSearch] = useState("");
 
@@ -258,19 +263,34 @@ export default function AdminDocuments() {
       return;
     }
     if (!form.invoiceNo) { toast.error("No. Invoice tidak boleh kosong."); return; }
+    // Tier 2 multi-vehicle: a multi-car invoice covers every row sharing the
+    // booking code. Mark them ALL invoiced so none are left orphaned in the
+    // "perlu tagihan" queue. Single-car invoices keep the original 1-row path.
+    const targetIds = invoiceOrderIds.length > 0
+      ? invoiceOrderIds
+      : [Number(selectedOrderId)];
     try {
-      await api.sync.markInvoiceGenerated(selectedOrderId, {
-        invoiceNumber: form.invoiceNo,
-        invoiceSentDate: form.date,
-        invoicePaymentStatus: "Pending",
-      });
+      if (targetIds.length > 1) {
+        await api.sync.bulkMarkInvoiceGenerated({
+          ids: targetIds.map(id => ({ id, invoiceNumber: form.invoiceNo })),
+          invoiceSentDate: form.date,
+          invoicePaymentStatus: "Pending",
+        });
+      } else {
+        await api.sync.markInvoiceGenerated(targetIds[0], {
+          invoiceNumber: form.invoiceNo,
+          invoiceSentDate: form.date,
+          invoicePaymentStatus: "Pending",
+        });
+      }
       apiCache.invalidate("documents:");
       apiCache.invalidate("orders:");
       // Refresh the pending list
       const fresh = await api.sync.ordersNeedingInvoice();
       setPending(Array.isArray(fresh) ? fresh : []);
       apiCache.set("documents:needsInvoice", fresh);
-      toast.success(`Invoice ${form.invoiceNo} tersimpan ke order. Order dihapus dari antrian "perlu tagihan".`);
+      const countMsg = targetIds.length > 1 ? ` (${targetIds.length} kendaraan)` : "";
+      toast.success(`Invoice ${form.invoiceNo}${countMsg} tersimpan ke order. Dihapus dari antrian "perlu tagihan".`);
     } catch (err) {
       toast.error("Gagal menyimpan: " + err.message);
     }
@@ -341,6 +361,47 @@ export default function AdminDocuments() {
     setDocType(next);
     setForm(defaultForm(next));
     setSelectedOrderId("");
+    setInvoiceOrderIds([]);
+  }
+
+  // Tier 2 multi-vehicle: every order row that shares this booking's code,
+  // including the picked one. A multi-car booking writes N rows under one
+  // orderNumber, so an invoice for it must list every car as its own line.
+  // Rows with no code (or a unique code) resolve to just themselves. Sorted
+  // by id so line numbering is deterministic regardless of which row was
+  // clicked.
+  function bookingSiblings(order) {
+    const code = (order?.orderNumber || "").trim();
+    if (!code) return [order];
+    const byId = new Map();
+    // Search both the orders cache and the pending-invoice queue so a booking
+    // surfaced only from "perlu tagihan" still resolves all of its cars.
+    for (const o of [...orders, ...pending]) {
+      if ((o.orderNumber || "").trim() === code) byId.set(o.id, o);
+    }
+    byId.set(order.id, order); // ensure the picked row is present
+    return [...byId.values()].sort((a, b) => a.id - b.id);
+  }
+
+  // Build one invoice line item from an order row.
+  function orderToInvoiceItem(o) {
+    const oc = o.customer || {};
+    const ocar = o.car || {};
+    const odrv = o.driver || {};
+    const pd = o.pickupDate ? new Date(o.pickupDate).toISOString().slice(0, 10) : todayISO();
+    const rd = o.returnDate ? new Date(o.returnDate).toISOString().slice(0, 10) : pd;
+    return {
+      user: oc.name || "",
+      driver: odrv.name || "",
+      destination: o.destination || "",
+      rentDate: pd,
+      rentReturnDate: rd,
+      unit: ocar.brand && ocar.name ? `${ocar.brand} ${ocar.name}` : (ocar.name || ""),
+      plate: ocar.licensePlate || "",
+      lembur: Number(o.overtimeHours || 0),
+      inap: Number(o.overnightNights || 0),
+      price: Number(o.totalPrice || 0),
+    };
   }
 
   // Pull data from a selected order into the current form (fills relevant fields)
@@ -348,6 +409,7 @@ export default function AdminDocuments() {
     const order = orders.find(o => String(o.id) === String(orderId));
     if (!order) return;
     setSelectedOrderId(orderId);
+    setInvoiceOrderIds([order.id]); // overridden below for multi-car invoices
     const c = order.customer || {};
     const car = order.car || {};
     const drv = order.driver || {};
@@ -362,6 +424,10 @@ export default function AdminDocuments() {
     const addr = (lookup && lookup.address) || c.address || "";
 
     if (docType === "invoice") {
+      // Multi-car booking → one line per car. Single bookings collapse to a
+      // 1-element array, identical to the old behaviour.
+      const siblings = bookingSiblings(order);
+      setInvoiceOrderIds(siblings.map(o => o.id));
       setForm({
         invoiceNo: `26/DSR/INV/${order.orderNumber || ""}`,
         clientName: customerLabel,
@@ -370,18 +436,7 @@ export default function AdminDocuments() {
         discount: 0,
         autoDisc: (order.totalDays || 1) >= 4,
         pajakRate: 0,
-        items: [{
-          user: c.name || "",
-          driver: drv.name || "",
-          destination: order.destination || "",
-          rentDate: order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO(),
-          rentReturnDate: order.returnDate ? new Date(order.returnDate).toISOString().slice(0, 10) : (order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO()),
-          unit: car.brand && car.name ? `${car.brand} ${car.name}` : (car.name || ""),
-          plate: car.licensePlate || "",
-          lembur: Number(order.overtimeHours || 0),
-          inap: Number(order.overnightNights || 0),
-          price: Number(order.totalPrice || 0),
-        }],
+        items: siblings.map(orderToInvoiceItem),
       });
     } else if (docType === "surat_jalan") {
       setForm({
@@ -1781,8 +1836,17 @@ function InvoiceTemplate({ form }) {
   // so the preview keeps the same three-row layout (Sub Total / Disc / TOTAL).
   const pajakAmount = itemsTotal * (Number(form.pajakRate || 0) / 100);
   const subTotal = itemsTotal + pajakAmount;
-  const totalDays = form.items.length;
-  const auto = form.autoDisc && totalDays >= 4;
+  // Auto-discount keys off the rental LENGTH (days), not the number of cars.
+  // Derive the longest rental span across line items from their date ranges
+  // so a multi-car booking (N items, same trip dates) doesn't falsely trip
+  // the 4-day threshold via item count. Falls back to 1 day when unparseable.
+  const rentalDays = Math.max(1, ...form.items.map(it => {
+    const d1 = new Date(it.rentDate);
+    const d2 = new Date(it.rentReturnDate);
+    if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 1;
+    return Math.floor((d2 - d1) / 86_400_000) + 1;
+  }));
+  const auto = form.autoDisc && rentalDays >= 4;
   const disc = auto ? subTotal * 0.05 : Number(form.discount || 0);
   const grand = subTotal - disc;
   const dateStr = fmtDateID(form.date);

@@ -1,6 +1,6 @@
 import { db } from '../db/index.js';
 import { drivers } from '../db/schema.js';
-import { eq, ilike, or, asc, desc, sql, and } from 'drizzle-orm';
+import { eq, ilike, or, asc, desc, sql, and, inArray } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 
 const sortFields = {
@@ -71,6 +71,19 @@ export const driverService = {
     async update(id, data) {
         const result = await db.update(drivers).set({ ...data, updatedAt: new Date() }).where(eq(drivers.id, id)).returning();
         return result[0];
+    },
+
+    // Bulk status change for several drivers at once. `status` must be a valid
+    // driver_status enum value; invalid values / empty id lists are no-ops.
+    async bulkUpdateStatus(ids, status) {
+        const valid = ['active', 'inactive', 'suspended'];
+        const cleanIds = (Array.isArray(ids) ? ids : []).map(Number).filter(Boolean);
+        if (!cleanIds.length || !valid.includes(status)) return [];
+        const result = await db.update(drivers)
+            .set({ status, updatedAt: new Date() })
+            .where(inArray(drivers.id, cleanIds))
+            .returning();
+        return result;
     },
 
     async delete(id) {

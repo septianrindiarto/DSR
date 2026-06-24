@@ -2,30 +2,39 @@ import { useState, useEffect, useMemo } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
-// DashboardBookingForm v4
-// In-dashboard booking form for logged-in users. Posts to /api/orders/public.
+// DashboardBookingForm v5 (Tier 2 multi-vehicle)
+// Customers can request 1-N vehicles in a single submission. The backend
+// generates ONE order code (C### or P###) and writes N order rows sharing
+// that code. Each row represents one car within the booking and can have
+// its own category, package, and per-car add-ons.
 //
-// Name + WhatsApp prefill from the user's profile but stay editable. The
-// person making the booking is not always the account holder — a PIC at
-// PT Foo may book a car for their courier, with the courier's phone as
-// the contact. The backend's customerService.findOrCreate maps whatever
-// is typed: existing customer with that whatsapp → reuse, new whatsapp →
-// create a fresh customer row. Either way the order ends up linked to a
-// real customers row so the agency can confirm.
+// Form shape:
+//   trip-level: fullName, whatsapp, pickupDate, returnDate, notes
+//   per-vehicle: carCategory, carCategoryNote (if Lainnya), quantity,
+//                package, destination, pickupLocation
 //
-// Nama Perusahaan stays locked to the org on the account (the form is
-// only mounted inside Dashboard, so we know the account exists).
-// Kendaraan is a category picker; the agency assigns a specific car
-// later via Rekap Order.
+// Quantity > 1 expands one row into N identical rows server-side, useful
+// when the customer wants e.g. 2 Avanzas without filling the row twice.
 
 const CAR_CATEGORIES = [
-  { value: "MPV",       label: "MPV",      hint: "Contoh: Avanza, Xenia" },
-  { value: "SUV",       label: "SUV",      hint: "Contoh: Innova, Fortuner" },
-  { value: "City Car",  label: "City Car", hint: "Contoh: Brio, Agya" },
-  { value: "Pickup",    label: "Pickup",   hint: "Muatan kurang dari 1.5 Ton" },
-  { value: "CDE",       label: "CDE",      hint: "Engkel, muatan 2 sampai 3 Ton" },
-  { value: "Lainnya",   label: "Lainnya",  hint: "Isi keterangan detail di bawah" },
+  { value: "MPV",      label: "MPV",      hint: "Contoh: Avanza, Xenia" },
+  { value: "SUV",      label: "SUV",      hint: "Contoh: Innova, Fortuner" },
+  { value: "City Car", label: "City Car", hint: "Contoh: Brio, Agya" },
+  { value: "Pickup",   label: "Pickup",   hint: "Muatan kurang dari 1.5 Ton" },
+  { value: "CDE",      label: "CDE",      hint: "Engkel, 2 sampai 3 Ton" },
+  { value: "Lainnya",  label: "Lainnya",  hint: "Isi keterangan di kolom detail" },
 ];
+
+const PACKAGE_OPTIONS = ["All In", "Mobil dan Driver", "Lepas Kunci"];
+
+const emptyVehicle = () => ({
+  carCategory: "",
+  carCategoryNote: "",
+  quantity: 1,
+  package: "",
+  destination: "",
+  pickupLocation: "",
+});
 
 export default function DashboardBookingForm({ onCreated }) {
   const { user } = useAuth();
@@ -34,6 +43,15 @@ export default function DashboardBookingForm({ onCreated }) {
   const [submitting, setSubmitting] = useState(false);
   const [info, setInfo] = useState("");
   const [error, setError] = useState("");
+
+  // Agency staff (admin/superadmin) book on behalf of clients, so they pick
+  // the company from a dropdown of affiliated clients. Plain client users are
+  // locked to their own company (filled from their account).
+  const isClient =
+    user?.accountType === "client" ||
+    user?.role === "client" || user?.role === "client_admin";
+  const isAgency = !isClient;
+  const [companies, setCompanies] = useState([]);
 
   useEffect(() => {
     api.me.get().then(setMe).catch(() => {});
@@ -44,25 +62,29 @@ export default function DashboardBookingForm({ onCreated }) {
     api.myOrg.getInfo().then(setOrgInfo).catch(() => {});
   }, [user?.organizationId]);
 
+  // Affiliated client companies — only agency staff need this list. The
+  // companies endpoint already scopes to the caller's agency (every org with
+  // parent_agency_id = the agency).
+  useEffect(() => {
+    if (!isAgency) return;
+    api.companies.list("limit=1000")
+      .then(res => setCompanies(Array.isArray(res) ? res : (res?.data || [])))
+      .catch(() => {});
+  }, [isAgency]);
+
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState({
     fullName: "",
     whatsapp: "",
-    carCategory: "",
-    carCategoryNote: "",
+    companyName: "", // used by agency staff to pick the client company
     pickupDate: today,
     returnDate: today,
-    destination: "",
-    pickupLocation: "",
-    package: "",
     notes: "",
+    vehicles: [emptyVehicle()],
   });
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
-  // Prefill from profile but only if the user hasn't started editing.
-  // Profile values are a convenience, not a constraint — the form is the
-  // source of truth on submit.
   useEffect(() => {
     if (!me) return;
     setForm(prev => ({
@@ -79,51 +101,94 @@ export default function DashboardBookingForm({ onCreated }) {
     return Math.max(1, Math.round((b - a) / 86400000) + 1);
   }, [form.pickupDate, form.returnDate]);
 
-  const selectedCategory = CAR_CATEGORIES.find(c => c.value === form.carCategory);
-
-  const companyName = orgInfo?.name || me?.customer?.companyName || "";
+  // Client users: company is fixed to their own org/account.
+  // Agency users: company comes from the dropdown selection (form.companyName).
+  const ownCompany = orgInfo?.name || me?.customer?.companyName || "";
+  const companyName = isAgency ? form.companyName : ownCompany;
   const hasCompany = Boolean(companyName);
+
+  // Vehicle row helpers
+  const addVehicle = () => {
+    if (form.vehicles.length >= 10) return;
+    setForm(prev => ({ ...prev, vehicles: [...prev.vehicles, emptyVehicle()] }));
+  };
+  const removeVehicle = (idx) => {
+    if (form.vehicles.length <= 1) return;
+    setForm(prev => ({ ...prev, vehicles: prev.vehicles.filter((_, i) => i !== idx) }));
+  };
+  const updateVehicle = (idx, field, value) => {
+    setForm(prev => ({
+      ...prev,
+      vehicles: prev.vehicles.map((v, i) => i === idx ? { ...v, [field]: value } : v),
+    }));
+  };
+
+  // Total expanded count across all rows (respects quantity)
+  const totalVehicleCount = form.vehicles.reduce(
+    (sum, v) => sum + (v.carCategory ? Math.max(1, Number(v.quantity) || 1) : 0),
+    0,
+  );
 
   async function handleSubmit(e) {
     e.preventDefault();
     setInfo(""); setError("");
-    if (!form.carCategory) { setError("Pilih kategori kendaraan."); return; }
+
     if (!form.fullName.trim()) { setError("Nama wajib diisi."); return; }
     const whatsapp = form.whatsapp.trim();
     if (!whatsapp) { setError("Nomor WhatsApp wajib diisi."); return; }
-    if (form.carCategory === "Lainnya" && !form.carCategoryNote.trim()) {
-      setError("Untuk kategori Lainnya, isi keterangan kendaraan yang dibutuhkan.");
+    if (!form.pickupDate || !form.returnDate) { setError("Tanggal pemakaian wajib diisi."); return; }
+
+    // Validate each vehicle row
+    const validVehicles = [];
+    for (let i = 0; i < form.vehicles.length; i++) {
+      const v = form.vehicles[i];
+      if (!v.carCategory) {
+        setError(`Kendaraan baris ${i + 1}: pilih kategori.`);
+        return;
+      }
+      if (v.carCategory === "Lainnya" && !v.carCategoryNote.trim()) {
+        setError(`Kendaraan baris ${i + 1}: isi keterangan untuk kategori Lainnya.`);
+        return;
+      }
+      const qty = Math.max(1, Math.min(10, Number(v.quantity) || 1));
+      validVehicles.push({
+        carCategoryRequested: v.carCategory,
+        carCategoryNote: v.carCategory === "Lainnya" ? v.carCategoryNote.trim() : null,
+        quantity: qty,
+        package: v.package || null,
+        destination: v.destination?.trim() || null,
+        pickupLocation: v.pickupLocation?.trim() || null,
+      });
+    }
+    if (validVehicles.length === 0) {
+      setError("Tambahkan minimal satu kendaraan.");
       return;
     }
-    if (!form.pickupDate || !form.returnDate) { setError("Tanggal pemakaian wajib diisi."); return; }
+    const expandedTotal = validVehicles.reduce((s, v) => s + v.quantity, 0);
+    if (expandedTotal > 10) {
+      setError("Maksimal 10 kendaraan per pemesanan.");
+      return;
+    }
 
     setSubmitting(true);
     try {
       const payload = {
-        carId: null,
-        carCategoryRequested: form.carCategory,
-        carCategoryNote: form.carCategory === "Lainnya" ? form.carCategoryNote.trim() : null,
         fullName: form.fullName.trim(),
         whatsapp,
         customerType: hasCompany ? "company" : "private",
         companyName: hasCompany ? companyName : null,
         pickupDate: form.pickupDate,
         returnDate: form.returnDate,
-        pickupLocation: form.pickupLocation || null,
         notes: form.notes || null,
-        package: form.package || null,
-        destination: form.destination || null,
+        vehicles: validVehicles,
       };
       const result = await api.orders.createPublic(payload);
       setInfo(result?.message || "Pesanan berhasil dikirim. Admin akan menghubungi Anda.");
-      // Reset only the per-booking fields. Keep name + whatsapp so the
-      // next booking from the same session doesn't re-type them — they
-      // can still be edited if the next pemesan is different.
+      // Reset per-booking fields; keep name + whatsapp for repeat bookings
       setForm(prev => ({
         ...prev,
-        carCategory: "", carCategoryNote: "",
-        destination: "", pickupLocation: "",
-        package: "", notes: "",
+        notes: "",
+        vehicles: [emptyVehicle()],
       }));
       if (onCreated) onCreated(result);
     } catch (err) {
@@ -145,138 +210,128 @@ export default function DashboardBookingForm({ onCreated }) {
         </div>
       </div>
 
-      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FieldL label="Nama" hint="Nama User">
-          <input
-            type="text"
-            value={form.fullName}
-            onChange={e => set("fullName", e.target.value)}
-            className="input"
-            required
-            placeholder="Nama lengkap pemesan"
-          />
-        </FieldL>
-
-
-        <FieldL label="No. Whatsapp" hint="Nomor kontak pemesan untuk konfirmasi (bisa berbeda dari nomor akun)">
-          <input
-            type="tel"
-            value={form.whatsapp}
-            onChange={e => set("whatsapp", e.target.value)}
-            required
-            className="input"
-            placeholder="08xxxxxxxxxx"
-          />
-        </FieldL>
-
-        <FieldL label="Nama Perusahaan" hint={hasCompany ? "Diisi otomatis dari akun Anda" : "Akun ini belum terdaftar pada perusahaan"}>
-          <input
-            type="text"
-            value={companyName || "Private"}
-            disabled
-            className="input bg-slate-50 text-slate-500"
-          />
-        </FieldL>
-
-        <FieldL label="Kategori Kendaraan" hint={selectedCategory?.hint || "Admin akan menetapkan unit setelah konfirmasi"}>
-          <select
-            value={form.carCategory}
-            onChange={e => set("carCategory", e.target.value)}
-            className="input"
-            required
-          >
-            <option value="">Pilih kategori</option>
-            {CAR_CATEGORIES.map(c => (
-              <option key={c.value} value={c.value}>
-                {c.label} ({c.hint})
-              </option>
-            ))}
-          </select>
-        </FieldL>
-
-        {form.carCategory === "Lainnya" && (
-          <FieldL label="Detail Kendaraan Lainnya" hint="Jelaskan kendaraan yang Anda butuhkan">
+      <div className="p-5 space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FieldL label="Nama" hint="Nama pemesan / PIC">
             <input
               type="text"
-              value={form.carCategoryNote}
-              onChange={e => set("carCategoryNote", e.target.value)}
+              value={form.fullName}
+              onChange={e => set("fullName", e.target.value)}
               className="input"
-              placeholder="Contoh: Bus Pariwisata 30 seat"
+              required
+              placeholder="Nama lengkap pemesan"
             />
           </FieldL>
-        )}
 
-        <FieldL label="Tujuan">
-          <input
-            type="text"
-            value={form.destination}
-            onChange={e => set("destination", e.target.value)}
-            className="input"
-            placeholder="Misal: Bandung, Jakarta"
-          />
-        </FieldL>
+          <FieldL label="No. Whatsapp" hint="Nomor kontak pemesan (bisa berbeda dari nomor akun)">
+            <input
+              type="tel"
+              value={form.whatsapp}
+              onChange={e => set("whatsapp", e.target.value)}
+              required
+              className="input"
+              placeholder="08xxxxxxxxxx"
+            />
+          </FieldL>
 
-                <FieldL label="Penjemputan">
-          <input
-            type="text"
-            value={form.pickupLocation}
-            onChange={e => set("pickupLocation", e.target.value)}
-            className="input"
-            placeholder="Alamat penjemputan"
-          />
-        </FieldL>
+          {isAgency ? (
+            <FieldL label="Nama Perusahaan" hint="Pilih perusahaan klien (afiliasi agensi Anda)">
+              <select
+                value={form.companyName}
+                onChange={e => set("companyName", e.target.value)}
+                className="input"
+              >
+                <option value="">— Pilih perusahaan klien —</option>
+                {companies.map(c => (
+                  <option key={c.id} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </FieldL>
+          ) : (
+            <FieldL label="Nama Perusahaan" hint={hasCompany ? "Diisi otomatis dari akun Anda" : "Akun ini belum terdaftar pada perusahaan"}>
+              <input
+                type="text"
+                value={companyName || "Private"}
+                disabled
+                className="input bg-slate-50 text-slate-500"
+              />
+            </FieldL>
+          )}
 
-        <FieldL label="Tgl Pemakaian">
-          <input
-            type="date"
-            value={form.pickupDate}
-            onChange={e => set("pickupDate", e.target.value)}
-            className="input"
-            required
-          />
-        </FieldL>
+          <FieldL label="Total Hari" hint="Dihitung otomatis dari tanggal">
+            <input type="text" value={totalDays + " hari"} disabled className="input bg-slate-50 text-slate-500" />
+          </FieldL>
+        </div>
 
-        <FieldL label="Tgl Selesai">
-          <input
-            type="date"
-            value={form.returnDate}
-            onChange={e => set("returnDate", e.target.value)}
-            min={form.pickupDate}
-            className="input"
-            required
-          />
-        </FieldL>
+        {/* Dates inline */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FieldL label="Tgl Pemakaian">
+            <input
+              type="date"
+              value={form.pickupDate}
+              onChange={e => set("pickupDate", e.target.value)}
+              className="input"
+              required
+            />
+          </FieldL>
 
-        <FieldL label="Total Hari" hint="Dihitung otomatis dari tanggal">
-          <input type="text" value={totalDays + " hari"} disabled className="input bg-slate-50 text-slate-500" />
-        </FieldL>
-
-        <FieldL label="Paket">
-          <input
-            list="dashboard-paket-options"
-            value={form.package}
-            onChange={e => set("package", e.target.value)}
-            className="input"
-            placeholder="All In / Mobil dan Driver / Lepas Kunci"
-          />
-          <datalist id="dashboard-paket-options">
-            <option value="All In" />
-            <option value="Mobil dan Driver" />
-            <option value="Lepas Kunci" />
-          </datalist>
-        </FieldL>
-
-        <div className="md:col-span-2">
-          <FieldL label="Keterangan">
-            <textarea
-              rows={3}
-              value={form.notes}
-              onChange={e => set("notes", e.target.value)}
-              className="input resize-y"
-              placeholder="Catatan tambahan untuk admin"
+          <FieldL label="Tgl Selesai">
+            <input
+              type="date"
+              value={form.returnDate}
+              onChange={e => set("returnDate", e.target.value)}
+              min={form.pickupDate}
+              className="input"
+              required
             />
           </FieldL>
         </div>
+      </div>
+
+      {/* Daftar Kendaraan - multi-row picker */}
+      <div className="px-5 pb-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Daftar Kendaraan</h3>
+            <p className="text-[11px] text-slate-500">
+              Tambahkan setiap jenis kendaraan yang Anda butuhkan. Total saat ini: <strong>{totalVehicleCount}</strong> unit.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={addVehicle}
+            disabled={form.vehicles.length >= 10}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary text-xs font-semibold hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span className="material-symbols-outlined text-[16px]">add</span>
+            Tambah Kendaraan
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {form.vehicles.map((v, idx) => (
+            <VehicleRow
+              key={idx}
+              index={idx}
+              vehicle={v}
+              canRemove={form.vehicles.length > 1}
+              onChange={(field, value) => updateVehicle(idx, field, value)}
+              onRemove={() => removeVehicle(idx)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="px-5 pb-5">
+        <FieldL label="Keterangan Tambahan" hint="Catatan untuk admin (opsional)">
+          <textarea
+            rows={2}
+            value={form.notes}
+            onChange={e => set("notes", e.target.value)}
+            className="input resize-y"
+            placeholder="Catatan tambahan untuk admin"
+          />
+        </FieldL>
       </div>
 
       {(info || error) && (
@@ -324,6 +379,114 @@ export default function DashboardBookingForm({ onCreated }) {
         }
       `}</style>
     </form>
+  );
+}
+
+function VehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
+  const selectedCategory = CAR_CATEGORIES.find(c => c.value === vehicle.carCategory);
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/50">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-bold text-slate-600">Kendaraan #{index + 1}</span>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="inline-flex items-center gap-1 text-red-600 hover:text-red-700 text-xs font-semibold"
+            aria-label="Hapus kendaraan"
+          >
+            <span className="material-symbols-outlined text-[16px]">close</span>
+            Hapus
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+        <div className="md:col-span-6">
+          <FieldL label="Kategori" hint={selectedCategory?.hint || "Pilih jenis kendaraan"}>
+            <select
+              value={vehicle.carCategory}
+              onChange={e => onChange("carCategory", e.target.value)}
+              className="input"
+              required
+            >
+              <option value="">Pilih kategori</option>
+              {CAR_CATEGORIES.map(c => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+          </FieldL>
+        </div>
+
+        <div className="md:col-span-2">
+          <FieldL label="Jumlah" hint="1-10 unit">
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={vehicle.quantity}
+              onChange={e => onChange("quantity", e.target.value)}
+              className="input"
+              required
+            />
+          </FieldL>
+        </div>
+
+        <div className="md:col-span-4">
+          <FieldL label="Paket" hint="Opsional">
+            <input
+              list={`paket-options-${index}`}
+              value={vehicle.package}
+              onChange={e => onChange("package", e.target.value)}
+              className="input"
+              placeholder="All In / Mobil dan Driver / Lepas Kunci"
+            />
+            <datalist id={`paket-options-${index}`}>
+              {PACKAGE_OPTIONS.map(p => <option key={p} value={p} />)}
+            </datalist>
+          </FieldL>
+        </div>
+
+        <div className="md:col-span-6">
+          <FieldL label="Tujuan" hint="Tujuan untuk kendaraan ini">
+            <input
+              type="text"
+              value={vehicle.destination}
+              onChange={e => onChange("destination", e.target.value)}
+              className="input"
+              placeholder="Misal: Bandung, Jakarta"
+            />
+          </FieldL>
+        </div>
+
+        <div className="md:col-span-6">
+          <FieldL label="Penjemputan" hint="Alamat penjemputan kendaraan ini">
+            <input
+              type="text"
+              value={vehicle.pickupLocation}
+              onChange={e => onChange("pickupLocation", e.target.value)}
+              className="input"
+              placeholder="Alamat penjemputan"
+            />
+          </FieldL>
+        </div>
+
+        {vehicle.carCategory === "Lainnya" && (
+          <div className="md:col-span-12">
+            <FieldL label="Detail Kendaraan Lainnya" hint="Jelaskan kendaraan yang Anda butuhkan">
+              <input
+                type="text"
+                value={vehicle.carCategoryNote}
+                onChange={e => onChange("carCategoryNote", e.target.value)}
+                className="input"
+                placeholder="Contoh: Bus Pariwisata 30 seat"
+                required
+              />
+            </FieldL>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

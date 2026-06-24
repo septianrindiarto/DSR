@@ -50,6 +50,8 @@ export default function AdminDrivers() {
   // Import / Export modal state
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  // Bulk selection of drivers for one-shot status changes.
+  const [selectedDrivers, setSelectedDrivers] = useState(() => new Set());
 
   // Client-side search — re-fetch only on filter/sort change
   useEffect(() => { loadDrivers(); }, [statusFilter, sortBy, sortOrder]);
@@ -260,6 +262,32 @@ export default function AdminDrivers() {
     deps: [search, statusFilter, sortBy, sortOrder],
   });
 
+  // ─── Bulk selection helpers ──────────────────────────────────────────
+  const toggleDriver = (id) => setSelectedDrivers(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const pageAllSelected = pagedDrivers.length > 0 && pagedDrivers.every(d => selectedDrivers.has(d.id));
+  const togglePageAll = () => setSelectedDrivers(prev => {
+    const n = new Set(prev);
+    if (pagedDrivers.every(d => n.has(d.id))) pagedDrivers.forEach(d => n.delete(d.id));
+    else pagedDrivers.forEach(d => n.add(d.id));
+    return n;
+  });
+
+  async function handleBulkStatus(status) {
+    const ids = [...selectedDrivers];
+    if (!ids.length) return;
+    try {
+      const res = await api.drivers.bulkStatus(ids, status);
+      apiCache.invalidate("drivers:");
+      setSelectedDrivers(new Set());
+      loadDrivers();
+      toast.success(`${res?.updated ?? ids.length} driver diperbarui ke "${t(status)}".`);
+    } catch (e) { toast.error(e.message); }
+  }
+
   // No full-page spinner gate — render immediately, show inline loader inside the table.
 
   return (
@@ -356,12 +384,28 @@ export default function AdminDrivers() {
         />
       )}
 
+      {/* Bulk action bar — appears when drivers are selected */}
+      {selectedDrivers.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 rounded-xl border border-primary/30 bg-primary/5">
+          <span className="text-sm font-semibold text-slate-700">{selectedDrivers.size} driver dipilih</span>
+          <span className="text-slate-300">·</span>
+          <span className="text-xs text-slate-500">Ubah status:</span>
+          <button onClick={() => handleBulkStatus("active")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("active")}</button>
+          <button onClick={() => handleBulkStatus("inactive")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 cursor-pointer">{t("inactive")}</button>
+          <button onClick={() => handleBulkStatus("suspended")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">{t("suspended")}</button>
+          <button onClick={() => setSelectedDrivers(new Set())} className="ml-auto text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Bersihkan</button>
+        </div>
+      )}
+
       {/* Table — alignment matches Rekap Order: centered headers/cells, name left-aligned. */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 text-slate-500 text-xs uppercase align-middle">
+                <th className="px-3 py-3 text-center align-middle" style={{ width: 40 }}>
+                  <input type="checkbox" checked={pageAllSelected} onChange={togglePageAll} className="cursor-pointer" title="Pilih semua di halaman ini" />
+                </th>
                 <th className="px-3 py-3 font-semibold text-center align-middle" style={{ minWidth: 50 }}>
                   <span className="inline-flex items-center justify-center gap-1 align-middle">{t("no_") || "No."}</span>
                 </th>
@@ -393,7 +437,10 @@ export default function AdminDrivers() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {pagedDrivers.map((driver, idx) => (
-                <tr key={driver.id} className="hover:bg-slate-50/60 transition-colors">
+                <tr key={driver.id} className={`hover:bg-slate-50/60 transition-colors ${selectedDrivers.has(driver.id) ? "bg-primary/5" : ""}`}>
+                  <td className="px-3 py-3 text-center align-middle">
+                    <input type="checkbox" checked={selectedDrivers.has(driver.id)} onChange={() => toggleDriver(driver.id)} className="cursor-pointer" />
+                  </td>
                   <td className="px-3 py-3 text-right align-middle text-slate-500 tabular-nums">
                     {(page - 1) * pageSize + idx + 1}
                   </td>
@@ -434,7 +481,7 @@ export default function AdminDrivers() {
                 </tr>
               ))}
               {filteredDrivers.length === 0 && (
-                <tr><td colSpan={9} className="px-5 py-12 text-center text-slate-400">
+                <tr><td colSpan={10} className="px-5 py-12 text-center text-slate-400">
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>

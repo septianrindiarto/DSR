@@ -168,6 +168,7 @@ export const api = {
         get: (id) => api.get(`/api/cars/${id}`),
         create: (data) => api.post('/api/cars', data),
         update: (id, data) => api.put(`/api/cars/${id}`, data),
+        bulkStatus: (ids, status) => api.put('/api/cars/bulk-status', { ids, status }),
         delete: (id) => api.delete(`/api/cars/${id}`),
         stats: () => api.get('/api/cars/stats'),
         uploadImages: (formData) => api.post('/api/cars/upload', formData),
@@ -185,6 +186,16 @@ export const api = {
         remove: (id) => api.delete(`/api/orders/${id}`),
         updateStatus: (id, status) => api.put(`/api/orders/${id}/status`, { status }),
         assignDriver: (id, driverId) => api.put(`/api/orders/${id}/assign-driver`, { driverId }),
+        // Tier 2 multi-vehicle: assign drivers to all cars of a booking at once.
+        assignDrivers: (assignments) => api.put('/api/orders/assign-drivers', { assignments }),
+        // Tier 2 multi-vehicle: assign fleet cars (units) per row of a booking.
+        assignCars: (assignments) => api.put('/api/orders/assign-cars', { assignments }),
+        // Tier 2 multi-vehicle: combined per-row update (car + driver + price).
+        updateBookingItems: (items) => api.put('/api/orders/booking-items', { items }),
+        // Tier 2 multi-vehicle: cancel an entire booking by its order code.
+        cancelBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/cancel`, {}),
+        // Tier 2 multi-vehicle: delete an entire booking by its order code.
+        removeBooking: (orderNumber) => api.delete(`/api/orders/booking/${encodeURIComponent(orderNumber)}`),
         sendConfirmation: (id) => api.post(`/api/orders/${id}/send-confirmation`, {}),
         stats: () => api.get('/api/orders/stats'),
         exportData: () => api.get('/api/orders/data/export'),
@@ -222,6 +233,7 @@ export const api = {
         get: (id) => api.get(`/api/drivers/${id}`),
         create: (data) => api.post('/api/drivers', data),
         update: (id, data) => api.put(`/api/drivers/${id}`, data),
+        bulkStatus: (ids, status) => api.put('/api/drivers/bulk-status', { ids, status }),
         delete: (id) => api.delete(`/api/drivers/${id}`),
         upload: (id, formData) => api.post(`/api/drivers/${id}/upload`, formData),
         stats: () => api.get('/api/drivers/stats'),

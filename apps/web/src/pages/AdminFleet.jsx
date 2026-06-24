@@ -46,6 +46,8 @@ export default function AdminFleet() {
   const fileInputRefs = [useRef(null), useRef(null), useRef(null)];
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  // Bulk selection of units for one-shot status changes.
+  const [selectedCars, setSelectedCars] = useState(() => new Set());
 
   // Client-side search — re-fetch only on filter/sort change
   useEffect(() => { loadCars(); }, [statusFilter, sortBy, sortOrder]);
@@ -228,6 +230,32 @@ export default function AdminFleet() {
     deps: [search, statusFilter, sortBy, sortOrder, viewMode],
   });
 
+  // ─── Bulk selection helpers ──────────────────────────────────────────
+  const toggleCar = (id) => setSelectedCars(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const pageAllSelected = pagedCars.length > 0 && pagedCars.every(c => selectedCars.has(c.id));
+  const togglePageAll = () => setSelectedCars(prev => {
+    const n = new Set(prev);
+    if (pagedCars.every(c => n.has(c.id))) pagedCars.forEach(c => n.delete(c.id));
+    else pagedCars.forEach(c => n.add(c.id));
+    return n;
+  });
+
+  async function handleBulkStatus(status) {
+    const ids = [...selectedCars];
+    if (!ids.length) return;
+    try {
+      const res = await api.cars.bulkStatus(ids, status);
+      apiCache.invalidate("cars:");
+      setSelectedCars(new Set());
+      loadCars();
+      toast.success(`${res?.updated ?? ids.length} unit diperbarui ke "${t(status)}".`);
+    } catch (e) { toast.error(e.message); }
+  }
+
   // No full-page spinner gate — page renders immediately. The empty-state row
   // shows a subtle inline loader during the initial fetch.
 
@@ -328,12 +356,28 @@ export default function AdminFleet() {
         />
       )}
 
+      {/* Bulk action bar — appears when units are selected (table view) */}
+      {viewMode === "table" && selectedCars.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 rounded-xl border border-primary/30 bg-primary/5">
+          <span className="text-sm font-semibold text-slate-700">{selectedCars.size} unit dipilih</span>
+          <span className="text-slate-300">·</span>
+          <span className="text-xs text-slate-500">Ubah status:</span>
+          <button onClick={() => handleBulkStatus("available")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("available")}</button>
+          <button onClick={() => handleBulkStatus("maintenance")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer">{t("maintenance") || "Perbaikan"}</button>
+          <button onClick={() => handleBulkStatus("rented")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 cursor-pointer">{t("rented")}</button>
+          <button onClick={() => setSelectedCars(new Set())} className="ml-auto text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Bersihkan</button>
+        </div>
+      )}
+
       {viewMode === "table" ? (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-xs uppercase align-middle">
+                  <th className="px-3 py-3 text-center align-middle" style={{ width: 40 }}>
+                    <input type="checkbox" checked={pageAllSelected} onChange={togglePageAll} className="cursor-pointer" title="Pilih semua di halaman ini" />
+                  </th>
                   <th className="px-3 py-3 font-semibold text-center align-middle" style={{ minWidth: 50 }}>
                     <span className="inline-flex items-center justify-center gap-1 align-middle">{t("no_") || "No."}</span>
                   </th>
@@ -371,7 +415,10 @@ export default function AdminFleet() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {pagedCars.map((car, idx) => (
-                  <tr key={car.id} className="hover:bg-slate-50/60 transition-colors">
+                  <tr key={car.id} className={`hover:bg-slate-50/60 transition-colors ${selectedCars.has(car.id) ? "bg-primary/5" : ""}`}>
+                    <td className="px-3 py-3 text-center align-middle">
+                      <input type="checkbox" checked={selectedCars.has(car.id)} onChange={() => toggleCar(car.id)} className="cursor-pointer" />
+                    </td>
                     <td className="px-3 py-3 text-right align-middle text-slate-500 tabular-nums">{(page - 1) * pageSize + idx + 1}</td>
                     <td className="px-3 py-3 text-left align-middle font-medium text-slate-900">{car.name}</td>
                     <td className="px-3 py-3 text-left align-middle text-slate-600">{car.brand}</td>
@@ -390,7 +437,7 @@ export default function AdminFleet() {
                     </td>
                   </tr>
                 ))}
-                {filteredCars.length === 0 && <tr><td colSpan={9} className="px-5 py-12 text-center text-slate-400">
+                {filteredCars.length === 0 && <tr><td colSpan={12} className="px-5 py-12 text-center text-slate-400">
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>

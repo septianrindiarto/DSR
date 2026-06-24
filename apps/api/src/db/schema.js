@@ -213,7 +213,14 @@ export const drivers = pgTable('drivers', {
 
 export const orders = pgTable('orders', {
     id: serial('id').primaryKey(),
-    orderNumber: varchar('order_number', { length: 20 }).notNull().unique(),
+    // orderNumber is the BOOKING identifier, NOT the per-car identifier.
+    // Multi-car bookings (Tier 2) write N order rows that all share the
+    // same orderNumber — the "trip code" customers reference. The DB
+    // UNIQUE constraint was dropped (see orders_shared_code_migration.sql)
+    // and a non-unique index added for lookup performance. Code generation
+    // is centralized in services/order-code.service.js so duplicates only
+    // happen intentionally (multi-car bookings), never by accident.
+    orderNumber: varchar('order_number', { length: 20 }).notNull(),
     carId: integer('car_id').references(() => cars.id, { onDelete: 'set null' }),
     customerId: integer('customer_id').references(() => customers.id).notNull(),
     driverId: integer('driver_id').references(() => drivers.id),

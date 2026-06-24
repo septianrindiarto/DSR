@@ -114,6 +114,20 @@ router.post('/', requireAuth, requireAdmin, validate(carSchema), activityLogger(
     } catch (error) { next(error); }
 });
 
+// Bulk status change for several units at once. Registered BEFORE `/:id`
+// so the literal path isn't captured as a car id.
+const bulkStatusSchema = z.object({
+    ids: z.array(z.number().int()).min(1).max(500),
+    status: z.enum(['available', 'rented', 'maintenance']),
+});
+
+router.put('/bulk-status', requireAuth, requireAdmin, validate(bulkStatusSchema), activityLogger('update', 'car'), async (req, res, next) => {
+    try {
+        const updated = await carService.bulkUpdateStatus(req.body.ids, req.body.status);
+        res.json({ updated: updated.length, status: req.body.status });
+    } catch (error) { next(error); }
+});
+
 router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'car'), async (req, res, next) => {
     try {
         const car = await carService.update(parseInt(req.params.id), req.body);

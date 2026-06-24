@@ -5,12 +5,20 @@ import { buildScopeConditions } from '../middleware/scope.js';
 
 /**
  * Generate a sequential order number based on customer type.
- *   - customer.customerType === 'company' → prefix "C" (e.g. C001, C002)
- *   - otherwise                           → prefix "P" (e.g. P001, P002)
+ *   - customer.customerType === 'company' -> prefix "C" (e.g. C001, C002)
+ *   - otherwise                           -> prefix "P" (e.g. P001, P002)
  *
  * Falls back to "P" when the customer cannot be loaded.
+ *
+ * Tier 2 multi-car booking: this returns ONE code per call. For a booking
+ * that creates N rows, call this ONCE at the route level and pass the
+ * resulting code into create() for each of the N rows so they all share
+ * it. The DB UNIQUE constraint on order_number was dropped — duplicates
+ * are now intentional and represent multi-car bookings.
+ *
+ * Exported via orderService.generateOrderNumber so routes can use it.
  */
-async function generateOrderNumber(customerId) {
+export async function generateOrderNumber(customerId) {
     let prefix = 'P';
     try {
         if (customerId) {
@@ -282,6 +290,133 @@ export const orderService = {
     async assignDriver(id, driverId) {
         const result = await db.update(orders).set({ driverId, updatedAt: new Date() }).where(eq(orders.id, id)).returning();
         return result[0];
+    },
+
+    // Tier 2 multi-vehicle: assign a (possibly different) driver to each car
+    // row of a booking in one shot. `assignments` is [{ orderId, driverId }];
+    // driverId null/0 clears the assignment for that row. Returns the updated
+    // rows. Runs each update independently so one bad id can't roll back the
+    // rest — the caller reports how many succeeded.
+    async assignDriversBulk(assignments) {
+        const updated = [];
+        for (const a of Array.isArray(assignments) ? assignments : []) {
+            const id = Number(a?.orderId);
+            if (!id) continue;
+            const driverId = a?.driverId ? Number(a.driverId) : null;
+            const r = await db.update(orders)
+                .set({ driverId, updatedAt: new Date() })
+                .where(eq(orders.id, id))
+                .returning();
+            if (r[0]) updated.push(r[0]);
+        }
+        return updated;
+    },
+
+    // Tier 2 multi-vehicle: assign an actual fleet car to each vehicle row of
+    // a booking. `assignments` is [{ orderId, carId }]; carId null/0 clears it.
+    // When a car is assigned to a row that is still UNPRICED (totalPrice 0 /
+    // null — typical for category-only requests from the booking form), the
+    // row's dailyRate/totalPrice are filled from the car's list price ×
+    // totalDays. Rows that already carry a (negotiated) price are left as-is so
+    // a re-assignment never silently clobbers agreed pricing.
+    async assignCarsBulk(assignments) {
+        const updated = [];
+        for (const a of Array.isArray(assignments) ? assignments : []) {
+            const id = Number(a?.orderId);
+            if (!id) continue;
+            const carId = a?.carId ? Number(a.carId) : null;
+
+            const [existing] = await db
+                .select({ totalDays: orders.totalDays, totalPrice: orders.totalPrice })
+                .from(orders)
+                .where(eq(orders.id, id))
+                .limit(1);
+            if (!existing) continue;
+
+            const patch = { carId, updatedAt: new Date() };
+
+            if (carId) {
+                const currentPrice = Number(existing.totalPrice || 0);
+                if (!(currentPrice > 0)) {
+                    const [car] = await db
+                        .select({ price: cars.price })
+                        .from(cars)
+                        .where(eq(cars.id, carId))
+                        .limit(1);
+                    if (car) {
+                        const rate = Number(car.price || 0);
+                        const days = Number(existing.totalDays || 1);
+                        patch.dailyRate = String(rate);
+                        patch.totalPrice = String(rate * days);
+                    }
+                }
+            }
+
+            const r = await db.update(orders).set(patch).where(eq(orders.id, id)).returning();
+            if (r[0]) updated.push(r[0]);
+        }
+        return updated;
+    },
+
+    // Tier 2 multi-vehicle: cancel an ENTIRE booking — every row that shares
+    // the order code. Order codes are generated from a single global sequence,
+    // so a code maps to exactly one booking and matching by code alone is safe
+    // (it can't bleed into another org's booking). Already-finished or
+    // already-cancelled rows are left untouched. Returns the rows it changed.
+    async cancelByOrderNumber(orderNumber) {
+        if (!orderNumber) return [];
+        const result = await db.update(orders)
+            .set({ status: 'cancelled', updatedAt: new Date() })
+            .where(and(
+                eq(orders.orderNumber, orderNumber),
+                sql`${orders.status} NOT IN ('completed', 'cancelled')`,
+            ))
+            .returning();
+        return result;
+    },
+
+    // Tier 2 multi-vehicle: combined per-row update for the booking "Action"
+    // form — set car, driver, and price for each vehicle row in one request.
+    // `items` is [{ orderId, carId?, driverId?, totalPrice? }]. carId/driverId
+    // null clears them. When totalPrice is provided, dailyRate is derived from
+    // it (price ÷ totalDays). Only the keys present on each item are touched.
+    async updateBookingItemsBulk(items) {
+        const updated = [];
+        for (const it of Array.isArray(items) ? items : []) {
+            const id = Number(it?.orderId);
+            if (!id) continue;
+
+            const [existing] = await db
+                .select({ totalDays: orders.totalDays })
+                .from(orders)
+                .where(eq(orders.id, id))
+                .limit(1);
+            if (!existing) continue;
+
+            const patch = { updatedAt: new Date() };
+            if (it.carId !== undefined) patch.carId = it.carId ? Number(it.carId) : null;
+            if (it.driverId !== undefined) patch.driverId = it.driverId ? Number(it.driverId) : null;
+            if (it.totalPrice !== undefined && it.totalPrice !== null && String(it.totalPrice) !== '') {
+                const price = Number(it.totalPrice) || 0;
+                const days = Number(existing.totalDays || 1);
+                patch.totalPrice = String(price);
+                patch.dailyRate = String(days > 0 ? price / days : price);
+            }
+
+            const r = await db.update(orders).set(patch).where(eq(orders.id, id)).returning();
+            if (r[0]) updated.push(r[0]);
+        }
+        return updated;
+    },
+
+    // Tier 2 multi-vehicle: delete an ENTIRE booking — every row sharing the
+    // order code. Returns the deleted rows (empty if the code wasn't found).
+    async removeByOrderNumber(orderNumber) {
+        if (!orderNumber) return [];
+        const existing = await db.select().from(orders).where(eq(orders.orderNumber, orderNumber));
+        if (existing.length === 0) return [];
+        await db.delete(orders).where(eq(orders.orderNumber, orderNumber));
+        return existing;
     },
 
     async markWhatsAppSent(id) {

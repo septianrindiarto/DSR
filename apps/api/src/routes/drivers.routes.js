@@ -109,6 +109,20 @@ router.post('/', requireAuth, requireAdmin, validate(driverSchema), activityLogg
     } catch (error) { next(error); }
 });
 
+// Bulk status change for several drivers at once. Registered BEFORE `/:id`
+// so the literal path isn't captured as a driver id.
+const bulkStatusSchema = z.object({
+    ids: z.array(z.number().int()).min(1).max(500),
+    status: z.enum(['active', 'inactive', 'suspended']),
+});
+
+router.put('/bulk-status', requireAuth, requireAdmin, validate(bulkStatusSchema), activityLogger('update', 'driver'), async (req, res, next) => {
+    try {
+        const updated = await driverService.bulkUpdateStatus(req.body.ids, req.body.status);
+        res.json({ updated: updated.length, status: req.body.status });
+    } catch (error) { next(error); }
+});
+
 router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'driver'), async (req, res, next) => {
     try {
         const data = { ...req.body };

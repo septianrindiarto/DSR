@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { orderService } from '../services/order.service.js';
+import { orderService, generateOrderNumber } from '../services/order.service.js';
 import { customerService } from '../services/customer.service.js';
 import { carService } from '../services/car.service.js';
 import { driverService } from '../services/driver.service.js';
@@ -17,14 +17,50 @@ import { like, sql } from 'drizzle-orm';
 
 const router = Router();
 
-const publicOrderSchema = z.object({
-    // carId becomes OPTIONAL. Customers now pick a vehicle CATEGORY (MPV,
-    // SUV, etc.) and the agency assigns a specific car later. The category
-    // request travels in carCategoryRequested OR carCategoryNote (free text
-    // when category=Other).
+// Per-vehicle row in a multi-car booking. Each row becomes one order
+// record sharing the booking's orderNumber. Per-car add-ons (overnight,
+// overtime, bailout, package) live here because they can differ per car
+// even within the same trip (different destinations, different drivers).
+const vehicleItemSchema = z.object({
     carId: z.number().int().nullable().optional(),
     carCategoryRequested: z.string().max(50).nullable().optional(),
     carCategoryNote: z.string().max(255).nullable().optional(),
+    // Quantity > 1 expands this entry into N identical rows server-side.
+    // Convenience for "I want 2 Avanzas" without forcing the form to
+    // build [{MPV},{MPV}] explicitly. Max 10 per row as a sanity guard.
+    quantity: z.number().int().min(1).max(10).optional().default(1),
+    // Per-car package + add-ons. Default 0 / null when unset.
+    package: z.string().nullable().optional(),
+    overnightNights: z.union([z.string(), z.number()]).optional(),
+    overtimeHours: z.union([z.string(), z.number()]).optional(),
+    bailout: z.union([z.string(), z.number()]).optional(),
+    // Per-car trip detail. Cars in one booking may split to different
+    // destinations / pickup points, so these live on the vehicle row.
+    // When omitted, the trip-level destination/pickupLocation is used as
+    // a fallback (keeps older single-value clients working).
+    destination: z.string().nullable().optional(),
+    pickupLocation: z.string().nullable().optional(),
+});
+
+const publicOrderSchema = z.object({
+    // Tier 2 multi-vehicle support — `vehicles` is the canonical shape.
+    // Legacy single-car submissions (carId / carCategoryRequested at the
+    // top level) are wrapped into a 1-element vehicles array inside the
+    // handler. Both shapes produce identical DB state for a 1-car booking.
+    vehicles: z.array(vehicleItemSchema).min(1).max(10).optional(),
+
+    // Legacy single-car fields (kept for backward compatibility with any
+    // client that hasn't migrated to vehicles[]). Ignored if vehicles[]
+    // is present.
+    carId: z.number().int().nullable().optional(),
+    carCategoryRequested: z.string().max(50).nullable().optional(),
+    carCategoryNote: z.string().max(255).nullable().optional(),
+    package: z.string().nullable().optional(),
+    overnightNights: z.union([z.string(), z.number()]).optional(),
+    overtimeHours: z.union([z.string(), z.number()]).optional(),
+    bailout: z.union([z.string(), z.number()]).optional(),
+
+    // Trip-level fields — shared across all vehicles in the booking.
     fullName: z.string().min(1, 'Nama wajib diisi'),
     whatsapp: z.string().min(1, 'WhatsApp wajib diisi'),
     customerType: z.enum(['private', 'company']).optional().default('private'),
@@ -32,27 +68,56 @@ const publicOrderSchema = z.object({
     pickupDate: z.string().min(1, 'Tanggal mulai wajib diisi'),
     returnDate: z.string().min(1, 'Tanggal selesai wajib diisi'),
     pickupLocation: z.string().nullable().optional(),
-    notes: z.string().nullable().optional(),
-    package: z.string().nullable().optional(),
     destination: z.string().nullable().optional(),
-    overnightNights: z.union([z.string(), z.number()]).optional(),
-    overtimeHours: z.union([z.string(), z.number()]).optional(),
-    bailout: z.union([z.string(), z.number()]).optional(),
+    notes: z.string().nullable().optional(),
 }).refine(
     (data) => data.customerType !== 'company' || (data.companyName && data.companyName.trim().length > 0),
     { message: 'Nama perusahaan wajib diisi untuk pemesanan perusahaan', path: ['companyName'] }
 );
 
-// Public: create order from booking form
+// Public: create order(s) from the booking form. Tier 2 multi-vehicle:
+// if the payload includes a `vehicles` array, we generate ONE orderNumber
+// and create N rows sharing it. Legacy single-vehicle payloads (no
+// `vehicles`) are wrapped into a 1-element array transparently so this
+// handler has a single code path.
 router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
     try {
         const {
-            carId, carCategoryRequested, carCategoryNote,
             fullName, whatsapp, customerType, companyName,
-            pickupDate, returnDate, pickupLocation, notes,
-            package: pkg, destination, overnightNights, overtimeHours, bailout,
+            pickupDate, returnDate, pickupLocation, destination, notes,
         } = req.body;
 
+        // Normalise to a vehicles array. Either the client sent vehicles[]
+        // directly, or we synthesise a 1-element array from the legacy
+        // top-level fields. Either way, downstream logic only handles N>=1.
+        const rawVehicles = Array.isArray(req.body.vehicles) && req.body.vehicles.length > 0
+            ? req.body.vehicles
+            : [{
+                carId: req.body.carId || null,
+                carCategoryRequested: req.body.carCategoryRequested || null,
+                carCategoryNote: req.body.carCategoryNote || null,
+                quantity: 1,
+                package: req.body.package || null,
+                overnightNights: req.body.overnightNights || 0,
+                overtimeHours: req.body.overtimeHours || 0,
+                bailout: req.body.bailout || 0,
+                destination: req.body.destination || null,
+                pickupLocation: req.body.pickupLocation || null,
+            }];
+
+        // Expand quantity > 1 into multiple identical rows. The form may send
+        // {category: MPV, quantity: 2} as a convenience for "2 of this kind."
+        // Cap at 10 per row in Zod; cap overall total at 10 as a sanity guard.
+        const vehicles = [];
+        for (const v of rawVehicles) {
+            const qty = Math.max(1, Math.min(10, Number(v.quantity) || 1));
+            for (let i = 0; i < qty; i++) vehicles.push({ ...v, quantity: 1 });
+        }
+        if (vehicles.length > 10) {
+            return res.status(400).json({ error: 'Maksimal 10 kendaraan per pemesanan.' });
+        }
+
+        // Customer resolve / create (once per booking — all vehicles share)
         let customer = await customerService.findOrCreate({
             name: fullName,
             phone: whatsapp,
@@ -70,83 +135,131 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             });
         }
 
-        // Customers now pick a vehicle CATEGORY (MPV, SUV, City Car, Pickup,
-        // CDE, Other). carId stays NULL until the agency assigns a specific
-        // car. Until a car is assigned, dailyRate and totalPrice cannot be
-        // computed, so we persist zeros and let the admin set them on edit.
-        let car = null;
-        if (carId) {
-            car = await carService.findById(carId);
-            if (!car) return res.status(404).json({ error: 'Mobil tidak ditemukan' });
+        // If the booking names a registered company, scope the order to that
+        // company's organization so its admins see it in their Rekap (e.g. an
+        // agency admin booking on behalf of "PT XYZ" via the dashboard
+        // dropdown, or a public visitor who types a known company name). When
+        // no org matches, organizationId stays null (agency-only visibility,
+        // unchanged from before). We deliberately do NOT backfill
+        // customers.user_id here — that linkage is reserved for the
+        // authenticated admin "Tambah Rekap" path.
+        let targetOrgId = null;
+        if (companyName && companyName.trim()) {
+            const needle = companyName.toLowerCase().trim();
+            const [matchedOrg] = await db.select({ id: organizations.id })
+                .from(organizations)
+                .where(sql`LOWER(TRIM(${organizations.name})) = ${needle}`)
+                .limit(1);
+            if (matchedOrg) targetOrgId = matchedOrg.id;
         }
 
+        // Dates (shared across all vehicles in the booking)
         const start = new Date(pickupDate);
         const end = new Date(returnDate);
         const totalDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
         if (totalDays <= 0) return res.status(400).json({ error: 'Tanggal tidak valid' });
 
-        const dailyRate = car ? Number(car.price) : 0;
-        const totalPrice = car ? dailyRate * totalDays : 0;
+        // ONE shared orderNumber for the whole booking. Tier 2 core: every
+        // vehicle row in this booking writes the same code. The DB UNIQUE
+        // constraint on order_number was dropped so duplicates are allowed.
+        const sharedOrderNumber = await generateOrderNumber(customer.id);
 
-        // Surface the requested category INSIDE notes so the admin reading the
-        // order sees it without needing a schema migration. If/when we add a
-        // proper car_category_requested column we can stop prefixing.
-        const categoryLine = carCategoryRequested
-            ? `Permintaan Kendaraan: ${carCategoryRequested}${carCategoryNote ? ` (${carCategoryNote})` : ''}`
-            : '';
-        const combinedNotes = [categoryLine, notes || ''].filter(Boolean).join('\n').trim() || null;
+        const createdOrders = [];
+        let representativeCar = null;
+        const carsById = new Map(); // carId -> car, for the Telegram per-row labels
 
-        const order = await orderService.create({
-            carId: carId || null,
-            customerId: customer.id,
-            pickupDate: start,
-            returnDate: end,
-            pickupLocation: pickupLocation || null,
-            totalDays,
-            dailyRate: String(dailyRate),
-            totalPrice: String(totalPrice),
-            notes: combinedNotes,
-            package: pkg || null,
-            destination: destination || null,
-            overnightNights: Number(overnightNights || 0),
-            overtimeHours: String(Number(overtimeHours || 0)),
-            bailout: String(Number(bailout || 0)),
-        });
+        for (const v of vehicles) {
+            let car = null;
+            if (v.carId) {
+                car = await carService.findById(v.carId);
+                if (!car) return res.status(404).json({ error: 'Mobil tidak ditemukan' });
+                if (!representativeCar) representativeCar = car;
+                carsById.set(v.carId, car);
+            }
 
-        // Log activity
+            const dailyRate = car ? Number(car.price) : 0;
+            const totalPrice = car ? dailyRate * totalDays : 0;
+
+            // Per-car notes line: category prefix + trip notes (shared text).
+            // Each row gets the same trip notes so the admin can read context
+            // off any individual row in Rekap.
+            const categoryLine = v.carCategoryRequested
+                ? `Permintaan Kendaraan: ${v.carCategoryRequested}${v.carCategoryNote ? ` (${v.carCategoryNote})` : ''}`
+                : '';
+            const combinedNotes = [categoryLine, notes || ''].filter(Boolean).join('\n').trim() || null;
+
+            // Per-car destination / pickup, falling back to the trip-level
+            // values when a row didn't specify its own.
+            const vehicleDestination = (v.destination ?? destination) || null;
+            const vehiclePickup = (v.pickupLocation ?? pickupLocation) || null;
+
+            const order = await orderService.create({
+                orderNumber: sharedOrderNumber,
+                carId: v.carId || null,
+                customerId: customer.id,
+                pickupDate: start,
+                returnDate: end,
+                pickupLocation: vehiclePickup,
+                totalDays,
+                dailyRate: String(dailyRate),
+                totalPrice: String(totalPrice),
+                notes: combinedNotes,
+                package: v.package || null,
+                destination: vehicleDestination,
+                overnightNights: Number(v.overnightNights || 0),
+                overtimeHours: String(Number(v.overtimeHours || 0)),
+                bailout: String(Number(v.bailout || 0)),
+                organizationId: targetOrgId,
+            });
+            createdOrders.push(order);
+        }
+
+        // Log activity ONCE per booking (not per vehicle row) so the activity
+        // feed shows "PT Foo booked 3 vehicles (C073)" rather than 3 separate
+        // create events with the same code.
         await logActivity({
             action: 'create',
             entity: 'order',
-            entityId: order.id,
+            entityId: createdOrders[0].id,
             details: {
                 customerName: fullName,
-                carName: car?.name || (carCategoryRequested || 'belum ditugaskan'),
-                orderNumber: order.orderNumber,
+                vehicleCount: createdOrders.length,
+                orderNumber: sharedOrderNumber,
             },
         });
 
-        // Fire-and-forget: push a Telegram alert to the agency owner so they
-        // can follow up with the customer via WhatsApp. We do NOT await this
-        // so a Telegram outage cannot delay the customer-facing response.
-        // The source label distinguishes between landing-page bookings (no
-        // session) and dashboard bookings (logged-in client). req.user is
-        // populated by Better Auth's session middleware only if the caller
-        // had a valid cookie; absence implies the anonymous landing path.
+        // Telegram: ONE notification per booking, listing all N vehicles.
+        // notifyOrderCreated accepts either a single order (legacy) or an
+        // array. We pass the array; older notification code can fall back
+        // to orders[0] if it hasn't been updated yet (Phase 6 hardens this).
         notifyOrderCreated({
-            order,
-            car,
+            order: createdOrders[0],
+            orders: createdOrders,
+            car: representativeCar,
+            carsById,
             customer,
             source: req.user ? 'dashboard' : 'landing',
         }).catch(() => { /* logged inside */ });
 
+        const grandTotal = createdOrders.reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
+
         res.status(201).json({
             success: true,
-            message: 'Pesanan berhasil dikirim! Admin akan menghubungi Anda via WhatsApp untuk konfirmasi.',
+            message: vehicles.length === 1
+                ? 'Pesanan berhasil dikirim! Admin akan menghubungi Anda via WhatsApp untuk konfirmasi.'
+                : `Pesanan ${vehicles.length} kendaraan berhasil dikirim! Admin akan menghubungi Anda via WhatsApp untuk konfirmasi.`,
             order: {
-                orderNumber: order.orderNumber,
+                orderNumber: sharedOrderNumber,
+                vehicleCount: createdOrders.length,
                 totalDays,
-                totalPrice: `Rp ${totalPrice.toLocaleString('id-ID')}`,
+                totalPrice: `Rp ${grandTotal.toLocaleString('id-ID')}`,
             },
+            // Optional: expose individual row ids so the form can deep-link to each.
+            vehicles: createdOrders.map(o => ({
+                id: o.id,
+                orderNumber: o.orderNumber,
+                package: o.package,
+            })),
         });
     } catch (error) { next(error); }
 });
@@ -416,6 +529,26 @@ const createOrderSchema = z.object({
     overnightNights: z.union([z.string(), z.number()]).optional(),
     overtimeHours: z.union([z.string(), z.number()]).optional(),
     bailout: z.union([z.string(), z.number()]).optional(),
+    // Tier 2 multi-vehicle: same shape as the public form's vehicles[].
+    // When present, the legacy carId/package/overnight/overtime/bailout
+    // top-level fields are IGNORED — the array is the source of truth.
+    // Each vehicle row gets its own driverId so the admin can pre-assign
+    // drivers from the same form. driverId at the top level is treated as
+    // a fallback for legacy single-row submissions only.
+    vehicles: z.array(z.object({
+        carId: z.number().int().nullable().optional(),
+        driverId: z.number().int().nullable().optional(),
+        package: z.string().nullable().optional(),
+        dailyRate: z.union([z.string(), z.number()]).optional(),
+        totalPrice: z.union([z.string(), z.number()]).optional(),
+        overnightNights: z.union([z.string(), z.number()]).optional(),
+        overtimeHours: z.union([z.string(), z.number()]).optional(),
+        bailout: z.union([z.string(), z.number()]).optional(),
+        notes: z.string().nullable().optional(),
+        // Per-car trip detail (falls back to the top-level values).
+        destination: z.string().nullable().optional(),
+        pickupLocation: z.string().nullable().optional(),
+    })).min(1).max(10).optional(),
 });
 
 router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activityLogger('create', 'order'), async (req, res, next) => {
@@ -480,50 +613,99 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             }
         }
 
-        // Dates
+        // Dates (shared across all vehicles in the booking)
         const now = new Date();
         const pickupDate = body.pickupDate ? new Date(body.pickupDate) : now;
         const returnDate = body.returnDate ? new Date(body.returnDate) : pickupDate;
         const diffDays = Math.max(1, Math.ceil((returnDate - pickupDate) / 86400000) + 1);
         const totalDays = Number(body.totalDays) || diffDays;
-        const totalPrice = Number(body.totalPrice || 0);
-        const dailyRate = body.dailyRate !== undefined
-            ? Number(body.dailyRate)
-            : (totalDays > 0 ? totalPrice / totalDays : totalPrice);
 
-        const order = await orderService.create({
-            carId: body.carId || null,
-            customerId: customer.id,
-            driverId: body.driverId || null,
-            pickupDate,
-            returnDate,
-            pickupLocation: body.pickupLocation || null,
-            totalDays,
-            dailyRate: String(dailyRate),
-            totalPrice: String(totalPrice),
-            status: body.status || 'pending',
-            notes: body.notes || null,
-            package: body.package || null,
-            destination: body.destination || null,
-            overnightNights: Number(body.overnightNights || 0),
-            overtimeHours: String(Number(body.overtimeHours || 0)),
-            bailout: String(Number(body.bailout || 0)),
-            organizationId: targetOrgId,
-            createdBy: req.user.id,
-            isDemo: req.user.isDemo || false,
-        });
+        // Tier 2 multi-vehicle: normalise to vehicles[] (1 element fallback
+        // for legacy single-vehicle payloads). Same pattern as the public
+        // endpoint above — single code path downstream.
+        const vehicles = Array.isArray(body.vehicles) && body.vehicles.length > 0
+            ? body.vehicles
+            : [{
+                carId: body.carId || null,
+                driverId: body.driverId || null,
+                package: body.package || null,
+                dailyRate: body.dailyRate,
+                totalPrice: body.totalPrice,
+                overnightNights: body.overnightNights,
+                overtimeHours: body.overtimeHours,
+                bailout: body.bailout,
+                notes: body.notes,
+            }];
+        if (vehicles.length > 10) {
+            return res.status(400).json({ error: 'Maksimal 10 kendaraan per pemesanan.' });
+        }
 
-        // Fire-and-forget Telegram notification. Source tag distinguishes
-        // this admin-created order from public-form bookings.
-        const carRow = body.carId ? await carService.findById(body.carId).catch(() => null) : null;
+        // ONE shared orderNumber for the whole booking — Tier 2 core.
+        const sharedOrderNumber = await generateOrderNumber(customer.id);
+
+        const createdOrders = [];
+        let representativeCar = null;
+        const carsById = new Map(); // carId -> car, for the Telegram per-row labels
+
+        for (const v of vehicles) {
+            const vehiclePrice = Number(v.totalPrice || 0);
+            const vehicleDailyRate = v.dailyRate !== undefined
+                ? Number(v.dailyRate)
+                : (totalDays > 0 ? vehiclePrice / totalDays : vehiclePrice);
+
+            if (v.carId && !carsById.has(v.carId)) {
+                const c = await carService.findById(v.carId).catch(() => null);
+                if (c) {
+                    carsById.set(v.carId, c);
+                    if (!representativeCar) representativeCar = c;
+                }
+            }
+
+            const order = await orderService.create({
+                orderNumber: sharedOrderNumber,
+                carId: v.carId || null,
+                customerId: customer.id,
+                driverId: v.driverId || null,
+                pickupDate,
+                returnDate,
+                pickupLocation: (v.pickupLocation ?? body.pickupLocation) || null,
+                totalDays,
+                dailyRate: String(vehicleDailyRate),
+                totalPrice: String(vehiclePrice),
+                status: body.status || 'pending',
+                notes: v.notes || body.notes || null,
+                package: v.package || null,
+                destination: (v.destination ?? body.destination) || null,
+                overnightNights: Number(v.overnightNights || 0),
+                overtimeHours: String(Number(v.overtimeHours || 0)),
+                bailout: String(Number(v.bailout || 0)),
+                organizationId: targetOrgId,
+                createdBy: req.user.id,
+                isDemo: req.user.isDemo || false,
+            });
+            createdOrders.push(order);
+        }
+
+        // ONE Telegram notification per booking, listing all N vehicles.
         notifyOrderCreated({
-            order,
-            car: carRow,
+            order: createdOrders[0],
+            orders: createdOrders,
+            car: representativeCar,
+            carsById,
             customer,
             source: 'agency',
         }).catch(() => { /* logged inside */ });
 
-        res.status(201).json(order);
+        // For backward compat: if 1-vehicle booking, return the single order
+        // shape clients are used to. For multi-vehicle, return the wrapper.
+        if (createdOrders.length === 1) {
+            return res.status(201).json(createdOrders[0]);
+        }
+        return res.status(201).json({
+            orderNumber: sharedOrderNumber,
+            vehicleCount: createdOrders.length,
+            orders: createdOrders,
+        });
     } catch (error) { next(error); }
 });
 
@@ -550,6 +732,81 @@ const updateOrderSchema = z.object({
     companyName: z.string().nullable().optional(),
     customerType: z.string().optional(),
     customerPhone: z.string().nullable().optional(),
+});
+
+// ─── Tier 2 multi-vehicle: bulk per-car driver assignment ─────────────
+// Assign a driver to each car of a booking in one request. Registered
+// BEFORE `/:id` so the literal path isn't captured as an order id.
+const assignDriversSchema = z.object({
+    assignments: z.array(z.object({
+        orderId: z.number().int(),
+        driverId: z.number().int().nullable().optional(),
+    })).min(1).max(20),
+});
+
+router.put('/assign-drivers', requireAuth, requireAdmin, validate(assignDriversSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const updated = await orderService.assignDriversBulk(req.body.assignments);
+        res.json({ updated: updated.length, orders: updated });
+    } catch (error) { next(error); }
+});
+
+// ─── Tier 2 multi-vehicle: bulk per-car FLEET-CAR assignment ──────────
+// Assign an actual car (unit) to each row of a booking. Mirrors
+// assign-drivers; price is recomputed for still-unpriced rows.
+const assignCarsSchema = z.object({
+    assignments: z.array(z.object({
+        orderId: z.number().int(),
+        carId: z.number().int().nullable().optional(),
+    })).min(1).max(20),
+});
+
+router.put('/assign-cars', requireAuth, requireAdmin, validate(assignCarsSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const updated = await orderService.assignCarsBulk(req.body.assignments);
+        res.json({ updated: updated.length, orders: updated });
+    } catch (error) { next(error); }
+});
+
+// ─── Tier 2 multi-vehicle: combined "Action" form — car + driver + price ──
+// One request sets the unit, driver, and price for each row of a booking.
+// Registered BEFORE `/:id` so the literal path isn't captured as an order id.
+const bookingItemsSchema = z.object({
+    items: z.array(z.object({
+        orderId: z.number().int(),
+        carId: z.number().int().nullable().optional(),
+        driverId: z.number().int().nullable().optional(),
+        totalPrice: z.union([z.string(), z.number()]).nullable().optional(),
+    })).min(1).max(20),
+});
+
+router.put('/booking-items', requireAuth, requireAdmin, validate(bookingItemsSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const updated = await orderService.updateBookingItemsBulk(req.body.items);
+        res.json({ updated: updated.length, orders: updated });
+    } catch (error) { next(error); }
+});
+
+// ─── Tier 2 multi-vehicle: cancel an entire booking by its order code ──
+// Cancels every still-cancellable row sharing the code. Single-car cancel
+// keeps using PUT /:id/status. 3-segment path → no clash with PUT /:id.
+router.put('/booking/:orderNumber/cancel', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const cancelled = await orderService.cancelByOrderNumber(req.params.orderNumber);
+        if (!cancelled.length) {
+            return res.status(404).json({ error: 'Booking tidak ditemukan atau sudah selesai/dibatalkan.' });
+        }
+        res.json({ cancelled: cancelled.length, orderNumber: req.params.orderNumber });
+    } catch (error) { next(error); }
+});
+
+// ─── Tier 2 multi-vehicle: delete an entire booking (all rows by code) ──
+router.delete('/booking/:orderNumber', requireAuth, requireAdmin, activityLogger('delete', 'order'), async (req, res, next) => {
+    try {
+        const removed = await orderService.removeByOrderNumber(req.params.orderNumber);
+        if (!removed.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
+        res.json({ deleted: removed.length, orderNumber: req.params.orderNumber });
+    } catch (error) { next(error); }
 });
 
 router.put('/:id', requireAuth, requireAdmin, validate(updateOrderSchema), activityLogger('update', 'order'), async (req, res, next) => {
@@ -591,7 +848,7 @@ router.put('/:id', requireAuth, requireAdmin, validate(updateOrderSchema), activ
     } catch (error) { next(error); }
 });
 
-// ─── Delete order ─────────────────────────────────────────────────────
+// Delete order
 router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'order'), async (req, res, next) => {
     try {
         const id = parseInt(req.params.id);

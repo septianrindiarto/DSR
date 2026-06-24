@@ -1,0 +1,86 @@
+// ─── Booking Group code generator ────────────────────────────────────
+// Generates human-readable trip identifiers in the form "BKG-YYYYMMDD-NNN"
+// where NNN is a per-day sequence number padded to 3 digits.
+//
+//   BKG-20260625-001   first booking group created on 25 Jun 2026
+//   BKG-20260625-002   second on the same day
+//   BKG-20260626-001   first on the next day
+//
+// Per-day sequencing keeps codes short and meaningful — operators can
+// glance at a code and know the booking date. Per-day collisions are
+// resolved by walking 001 → 999 until a free slot is found.
+//
+// This is the trip-level identifier. It coexists with the existing per-car
+// order.orderNumber (e.g. "C073", "P022") — both stay live in the data
+// model, serving different purposes.
+
+import { db } from '../db/index.js';
+import { bookingGroups } from '../db/schema.js';
+import { eq, like } from 'drizzle-orm';
+
+const PREFIX = 'BKG';
+const MAX_PER_DAY = 999;
+
+function formatDateForCode(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    const yyyy = String(d.getFullYear());
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}${mm}${dd}`;
+}
+
+/**
+ * Generate the next available BKG-YYYYMMDD-NNN code for the given date.
+ * Walks NNN from 001 up to 999 until a free slot is found.
+ *
+ * @param {Date} [date=new Date()] - The booking date (typically "now").
+ * @returns {Promise<{ code: string, attempts: number }>}
+ */
+export async function findAvailableBookingGroupCode(date = new Date()) {
+    const datePart = formatDateForCode(date);
+    const codePrefix = `${PREFIX}-${datePart}-`;
+
+    // Pull all existing codes for this date so we don't round-trip the DB
+    // 999 times in the worst case.
+    const existingRows = await db.select({ code: bookingGroups.code })
+        .from(bookingGroups)
+        .where(like(bookingGroups.code, `${codePrefix}%`));
+
+    const takenSet = new Set(existingRows.map(r => r.code));
+
+    for (let n = 1; n <= MAX_PER_DAY; n++) {
+        const candidate = `${codePrefix}${String(n).padStart(3, '0')}`;
+        if (!takenSet.has(candidate)) {
+            return { code: candidate, attempts: n };
+        }
+    }
+
+    // Astronomically unlikely but worth handling.
+    throw new Error(
+        `Booking group code exhausted for ${datePart} (>${MAX_PER_DAY} bookings in one day).`,
+    );
+}
+
+/**
+ * Create a new booking_groups row with an auto-generated code.
+ *
+ * @param {object} data
+ * @param {number} [data.customerId]
+ * @param {number} [data.organizationId]
+ * @param {string} [data.notes]
+ * @param {string} [data.createdBy]   - user.id of the creator (null for anonymous public bookings)
+ * @returns {Promise<object>} The inserted booking_groups row.
+ */
+export async function createBookingGroup(data) {
+    const { code } = await findAvailableBookingGroupCode(new Date());
+
+    const [row] = await db.insert(bookingGroups).values({
+        code,
+        customerId: data.customerId || null,
+        organizationId: data.organizationId || null,
+        notes: data.notes || null,
+        createdBy: data.createdBy || null,
+    }).returning();
+
+    return row;
+}

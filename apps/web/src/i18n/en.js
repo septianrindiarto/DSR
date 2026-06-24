@@ -166,7 +166,7 @@ export const en = {
     avgRentalDays: 'Average Rental Duration',
     avgOrderValue: 'Average Order Value',
     yoyComparison: 'This Year vs Last Year',
-    yoyComparisonSubtitle: 'Total orders, revenue, and net by month',
+    yoyComparisonSubtitle: 'Trips booked, cars rented, revenue, and net by month',
     topContributors: 'Top 5 Contributors',
     topContributorsSubtitle: 'Customers with the highest revenue contribution',
     omset: 'Revenue',
@@ -174,6 +174,10 @@ export const en = {
     total: 'Total',
     month: 'Month',
     sumDays: 'Total Days',
+    tripsBooked: 'Trips',
+    carsRented: 'Cars',
+    tripsBookedFull: 'Trips Booked',
+    carsRentedFull: 'Cars Rented',
 
     // Auth
     loginTitle: 'Admin Portal',
