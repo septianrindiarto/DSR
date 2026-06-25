@@ -1,0 +1,57 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Booking groups (Tier 2 multi-car booking, Phase 1 of 11)
+--
+-- Adds a "trip" wrapper around N orders. A single booking_group can contain
+-- 1 or more orders (rows in the existing orders table). One customer request
+-- = one booking_group. Each car within that group remains its own order row
+-- with its own per-car fields (dates, destination, overnight, overtime,
+-- bailout, total_price, driver, status).
+--
+-- The order.code (P022, C073, …) stays as the per-car identifier — unchanged.
+-- The new booking_groups.code (BKG-YYYYMMDD-NNN) is the per-trip identifier
+-- that customers reference and that appears on per-trip documents (invoice,
+-- kwitansi, kontrak).
+--
+-- IMPORTANT: Existing orders are NOT backfilled. They keep
+-- booking_group_id = NULL and are treated as legacy single-car orders by the
+-- application. This is per explicit user policy — no modification of historic
+-- data, even by adding a value to a new column.
+--
+-- All statements are idempotent (CREATE IF NOT EXISTS, ADD COLUMN IF NOT
+-- EXISTS) so re-running this migration is safe.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS booking_groups (
+    id              SERIAL PRIMARY KEY,
+    -- Human-readable trip identifier, e.g. "BKG-20260625-001".
+    -- Generated server-side during creation by display-id-style helper.
+    code            VARCHAR(30) NOT NULL UNIQUE,
+    -- Optional customer link. Anonymous landing-page bookings start with
+    -- NULL and get the customer attached on resolution (same as orders).
+    customer_id     INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    -- Tenancy tag. Mirrors orders.organization_id and is used by
+    -- scope.js to ensure the agency only sees groups they should.
+    organization_id INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+    -- Free-text notes the customer entered on the booking form. Per-car
+    -- notes still live on each order row (orders.notes).
+    notes           TEXT,
+    -- Trip-level audit. created_by is the user who submitted the form
+    -- (anonymous public bookings leave this NULL).
+    created_by      TEXT REFERENCES "user"(id) ON DELETE SET NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_booking_groups_code             ON booking_groups (code);
+CREATE INDEX IF NOT EXISTS idx_booking_groups_customer         ON booking_groups (customer_id);
+CREATE INDEX IF NOT EXISTS idx_booking_groups_organization     ON booking_groups (organization_id);
+CREATE INDEX IF NOT EXISTS idx_booking_groups_created_at       ON booking_groups (created_at);
+
+-- Foreign key on orders. Nullable — legacy single-car orders stay NULL
+-- and the application treats NULL as "this order is not part of a multi-car
+-- booking group." New orders going forward are tagged.
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS booking_group_id INTEGER
+    REFERENCES booking_groups(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_orders_booking_group_id ON orders (booking_group_id);

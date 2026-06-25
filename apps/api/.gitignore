@@ -1,5 +1,7 @@
 node_modules/
 .env
-drizzle/
+# NOTE: drizzle/ is intentionally TRACKED — it holds the hand-written SQL
+# migrations the deploy runs via `npm run migrate`. Do not ignore it, or the
+# production clone won't have any migrations to apply.
 uploads/*
 !uploads/.gitkeep
