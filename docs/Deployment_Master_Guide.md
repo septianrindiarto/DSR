@@ -312,9 +312,19 @@ The Rekap watcher is desktop-only — disable on the VPS.
 Choose **same-origin** unless you have a specific reason not to.
 
 **Same-origin (recommended):** nginx serves `/` (web bundle) and
-`/api/*` (proxy to backend) on one domain. Set `VITE_API_BASE=`
-(empty) in `apps/web/.env.production`. Frontend fetches `/api/...` as
-same-origin. Zero CORS complexity, cookies Just Work.
+`/api/*` (proxy to backend) on one domain. Set
+`VITE_API_BASE=https://your-domain` (the full HTTPS origin, e.g.
+`https://dsrappai.com`) in `apps/web/.env.production`. The frontend then
+calls the API on the same host nginx proxies — no CORS, cookies Just
+Work.
+
+> ⚠️ Do NOT set `VITE_API_BASE=` (empty). `apps/web/src/lib/api.js`
+> resolves the base as `import.meta.env.VITE_API_BASE || 'http://localhost:5000'`
+> — an empty value is falsy and falls back to **localhost:5000**, so the
+> deployed app calls each visitor's own machine and every request fails
+> with "failed to fetch". Always set the real `https://` origin.
+> (If you'd rather make empty mean "same-origin/relative", change that
+> `||` to `??` in api.js — then empty resolves to a relative `/api`.)
 
 **Split subdomains:** `app.dsrappai.com` for web, `api.dsrappai.com`
 for API. Set `VITE_API_BASE=https://api.dsrappai.com`. Two nginx
@@ -612,11 +622,12 @@ node -e "import('./src/db/index.js').then(async m => {
 
 ### 8.7 Build the frontend
 
-Same-origin (recommended):
+Same-origin (recommended) — use the full HTTPS origin, NOT empty (see
+§5's warning; empty falls back to localhost and breaks the live app):
 
 ```bash
 cd ~/dsr/apps/web
-echo "VITE_API_BASE=" > .env.production
+echo "VITE_API_BASE=https://dsrappai.com" > .env.production
 npm run build
 ls dist/index.html   # confirm the build landed
 ```

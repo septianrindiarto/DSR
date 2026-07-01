@@ -146,7 +146,7 @@ function carLabel(car) {
 // Pure message builder — no I/O, exported so it can be unit-tested without a
 // Telegram token or network. Returns the HTML string, or null when there are
 // no order rows to render.
-export function buildOrderMessage({ order, orders, car, carsById, customer, source = 'landing' }) {
+export function buildOrderMessage({ order, orders, car, carsById, customer, source = 'landing', requestVehicles }) {
     const sourceLabels = {
             landing:   'Landing Page',
             dashboard: 'Dashboard Client',
@@ -167,7 +167,10 @@ export function buildOrderMessage({ order, orders, car, carsById, customer, sour
             row?.car || (lookup && row?.carId != null ? lookup.get(row.carId) : null) || null;
 
         const head = rows[0];
-        const customerLine = customer?.name ? esc(customer.name) : '-';
+        // Prefer the order's snapshot name (exact form value) over the deduped
+        // customer record's name.
+        const customerLine = (head?.customerName || customer?.name)
+            ? esc(head?.customerName || customer.name) : '-';
         const companyLine = customer?.companyName ? esc(customer.companyName) : 'Private';
         const phone = customer?.phone || customer?.whatsapp || '';
         const waPath = waNumber(phone);
@@ -191,15 +194,38 @@ export function buildOrderMessage({ order, orders, car, carsById, customer, sour
             }
         }
 
-        // Trip-level fields shared across all rows (read off the head row).
-        if (head?.destination) lines.push(`<b>Tujuan:</b> ${esc(head.destination)}`);
-        if (head?.pickupLocation) lines.push(`<b>Penjemputan:</b> ${esc(head.pickupLocation)}`);
+        // The customer's REQUEST (pre-expansion) — when present we list each
+        // entry as "N unit Category" with its own jemput/tujuan line. This is
+        // the canonical view for landing/dashboard submissions and reflects
+        // exactly what was submitted (e.g. "2 unit MPV" + "1 unit SUV").
+        const requestList = Array.isArray(requestVehicles) ? requestVehicles.filter(Boolean) : [];
+        // Per-vehicle pickup/destination is shown inline below, so only show
+        // the trip-level Tujuan/Penjemputan for a plain single-car layout.
+        const perVehicleDetail = requestList.length > 0 || isMulti;
+
+        if (!perVehicleDetail) {
+            if (head?.destination) lines.push(`<b>Tujuan:</b> ${esc(head.destination)}`);
+            if (head?.pickupLocation) lines.push(`<b>Penjemputan:</b> ${esc(head.pickupLocation)}`);
+        }
         lines.push(`<b>Tanggal:</b> ${fmtDate(head?.pickupDate)} - ${fmtDate(head?.returnDate)}`);
         if (head?.totalDays) lines.push(`<b>Lama:</b> ${head.totalDays} hari`);
 
-        if (isMulti) {
-            // One block per vehicle. Use the per-row car object, the carsById
-            // fallback, or the single `car` arg as a last resort for row 0.
+        if (requestList.length > 0) {
+            // Grouped request view — no price (nothing has been quoted yet).
+            lines.push('');
+            lines.push(`<b>Kendaraan (${rows.length}):</b>`);
+            requestList.forEach((rv, idx) => {
+                const qty = Math.max(1, Number(rv.quantity) || 1);
+                const cat = rv.carCategoryRequested || rv.category || 'Kategori menyusul';
+                const note = rv.carCategoryNote ? ` (${esc(rv.carCategoryNote)})` : '';
+                const pkg = rv.package ? ` — ${esc(rv.package)}` : '';
+                lines.push(`${idx + 1}. ${qty} unit ${esc(cat)}${note}${pkg}`);
+                const pickup = rv.pickupLocation || head?.pickupLocation || '';
+                const dest = rv.destination || head?.destination || '';
+                lines.push(`   jemput di ${esc(pickup || '-')} tujuan ${esc(dest || '-')}`);
+            });
+        } else if (isMulti) {
+            // Per-row car view (e.g. admin Tambah Rekap with assigned units). No price.
             lines.push('');
             lines.push(`<b>Kendaraan (${rows.length}):</b>`);
             rows.forEach((row, idx) => {
@@ -210,21 +236,17 @@ export function buildOrderMessage({ order, orders, car, carsById, customer, sour
                 if (Number(row?.overnightNights)) bits.push(`inap ${Number(row.overnightNights)}`);
                 if (Number(row?.overtimeHours)) bits.push(`lembur ${Number(row.overtimeHours)} jam`);
                 const detail = bits.length ? ` <i>(${bits.join(', ')})</i>` : '';
-                const price = row?.totalPrice ? ` — ${fmtRp(row.totalPrice)}` : '';
-                lines.push(`${idx + 1}. ${label}${detail}${price}`);
+                lines.push(`${idx + 1}. ${label}${detail}`);
+                const pickup = row?.pickupLocation || '';
+                const dest = row?.destination || '';
+                if (pickup || dest) lines.push(`   jemput di ${esc(pickup || '-')} tujuan ${esc(dest || '-')}`);
             });
-            const grand = rows.reduce((sum, r) => sum + Number(r?.totalPrice || 0), 0);
-            if (grand > 0) {
-                lines.push('');
-                lines.push(`<b>Total estimasi:</b> ${fmtRp(grand)}`);
-            }
         } else {
-            // Single-car layout (unchanged from the original).
+            // Single-car layout. No price.
             const rowCar = resolveCar(head) || car;
             lines.push('');
             lines.push(`<b>Kendaraan:</b> ${carLabel(rowCar) || '-'}`);
             if (head?.package) lines.push(`<b>Paket:</b> ${esc(head.package)}`);
-            if (head?.totalPrice) lines.push(`<b>Estimasi:</b> ${fmtRp(head.totalPrice)}`);
         }
 
         // Notes: dedupe across rows (multi-car bookings repeat trip notes).
@@ -259,10 +281,35 @@ export async function notifyOrderCreated(args) {
     }
 }
 
+// Stage 2 — order claim notification. Built pure for testability.
+// NOTE: currently sends to the configured TELEGRAM_ADMIN_CHAT_ID(s) (which
+// should include superadmin). Per-claimer personal chat requires a future
+// user.telegram_chat_id field; until then the configured chats receive it.
+export function buildClaimMessage({ orderNumber, claimerName, claimerRole, agencyName, vehicleCount } = {}) {
+    const lines = [];
+    lines.push('📌 <b>Order diklaim</b>');
+    if (orderNumber) lines.push(`<code>${esc(orderNumber)}</code>${vehicleCount ? ` · ${vehicleCount} kendaraan` : ''}`);
+    if (claimerName) lines.push(`<b>Oleh:</b> ${esc(claimerName)}${claimerRole ? ` (${esc(claimerRole)})` : ''}`);
+    if (agencyName) lines.push(`<b>Agency:</b> ${esc(agencyName)}`);
+    return lines.join('\n');
+}
+
+export async function notifyOrderClaimed(args) {
+    try {
+        const text = buildClaimMessage(args);
+        return await notifyAdmin(text, { parseMode: 'HTML', disablePreview: true });
+    } catch (err) {
+        console.warn('[telegram] notifyOrderClaimed threw:', err?.message || err);
+        return { ok: false, reason: 'exception', error: err?.message };
+    }
+}
+
 export default {
     isTelegramConfigured,
     notifyAdmin,
     notifyOrderCreated,
     buildOrderMessage,
+    notifyOrderClaimed,
+    buildClaimMessage,
 };
 // Tier 2 multi-vehicle: notifyOrderCreated renders N cars in one message.

@@ -217,6 +217,9 @@ export const id = {
     // Access requests (Phase 3)
     accessRequests: 'Permintaan Akses',
     requestAccess: 'Ajukan Permintaan Akses',
+    claimOrders: 'Klaim Order',
+    claim: 'Klaim',
+    release: 'Lepas',
     requestAccessTitle: 'Akses Fitur Diperlukan',
     requestAccessBody: 'Anda belum memiliki akses ke fitur ini. Ajukan permintaan ke admin untuk membukanya.',
     requestAccessNotePlaceholder: 'Alasan permintaan (opsional)…',
@@ -333,7 +336,7 @@ export const id = {
     footerBrandText: 'Solusi transportasi terbaik untuk kebutuhan bisnis dan liburan Anda. Sewa mudah, cepat, dan terpercaya.',
     contactUs: 'Hubungi Kami',
     addressLabel: 'Alamat',
-    addressValue: 'Jl. Sudirman No. 123, Jakarta Selatan',
+    addressValue: 'Buah Batu, Bandung, Jawa Barat',
     phoneLabel: 'Telepon',
     emailLabel: 'Email',
     quickActionTitle: 'Siap Bepergian?',

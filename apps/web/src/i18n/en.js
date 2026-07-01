@@ -217,6 +217,9 @@ export const en = {
     // Access requests (Phase 3)
     accessRequests: 'Access Requests',
     requestAccess: 'Request Access',
+    claimOrders: 'Claim Order',
+    claim: 'Claim',
+    release: 'Release',
     requestAccessTitle: 'Feature Access Required',
     requestAccessBody: "You don't have access to this feature yet. Request access from an admin to unlock it.",
     requestAccessNotePlaceholder: 'Reason for request (optional)…',
@@ -332,7 +335,7 @@ export const en = {
     footerBrandText: 'The best transportation solution for your business and leisure needs. Easy, fast, and trusted rentals.',
     contactUs: 'Contact Us',
     addressLabel: 'Address',
-    addressValue: 'Jl. Sudirman No. 123, South Jakarta',
+    addressValue: 'Buah Batu, Bandung, Jawa Barat',
     phoneLabel: 'Phone',
     emailLabel: 'Email',
     quickActionTitle: 'Ready to Travel?',

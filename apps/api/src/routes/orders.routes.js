@@ -4,8 +4,9 @@ import { customerService } from '../services/customer.service.js';
 import { carService } from '../services/car.service.js';
 import { driverService } from '../services/driver.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
-import { notifyOrderCreated } from '../services/telegram.service.js';
-import { requireAuth, requireAdmin, requireRole } from '../middleware/auth.js';
+import { notifyOrderCreated, notifyOrderClaimed } from '../services/telegram.service.js';
+import { relationshipService } from '../services/relationship.service.js';
+import { requireAuth, requireAdmin, requireRole, optionalAuth } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { activityLogger } from '../middleware/logger.js';
 import { logActivity } from '../middleware/logger.js';
@@ -70,6 +71,7 @@ const publicOrderSchema = z.object({
     pickupLocation: z.string().nullable().optional(),
     destination: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    affiliateCode: z.string().nullable().optional(), // ?ref=<code> from the landing page
 }).refine(
     (data) => data.customerType !== 'company' || (data.companyName && data.companyName.trim().length > 0),
     { message: 'Nama perusahaan wajib diisi untuk pemesanan perusahaan', path: ['companyName'] }
@@ -80,7 +82,7 @@ const publicOrderSchema = z.object({
 // and create N rows sharing it. Legacy single-vehicle payloads (no
 // `vehicles`) are wrapped into a 1-element array transparently so this
 // handler has a single code path.
-router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
+router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, res, next) => {
     try {
         const {
             fullName, whatsapp, customerType, companyName,
@@ -153,6 +155,20 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             if (matchedOrg) targetOrgId = matchedOrg.id;
         }
 
+        // Initial ownership (the 3 rules + §10). An affiliate link wins; else
+        // an agency creator owns it (Rule 3); else a client/anonymous order is
+        // routed by its company's agency count (Rule 1 = exactly one agency
+        // auto-claims; Rule 2 = 0 or many → left unclaimed for Klaim Order).
+        let affiliateAgency = null;
+        if (req.body.affiliateCode) {
+            affiliateAgency = await relationshipService.resolveAffiliate(req.body.affiliateCode);
+        }
+        const claimFields = await orderService.resolveInitialClaim({
+            user: req.user || null,
+            targetOrgId,
+            affiliateAgency,
+        });
+
         // Dates (shared across all vehicles in the booking)
         const start = new Date(pickupDate);
         const end = new Date(returnDate);
@@ -197,6 +213,7 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
                 orderNumber: sharedOrderNumber,
                 carId: v.carId || null,
                 customerId: customer.id,
+                customerName: fullName, // exact "Nama" from the form
                 pickupDate: start,
                 returnDate: end,
                 pickupLocation: vehiclePickup,
@@ -210,6 +227,10 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
                 overtimeHours: String(Number(v.overtimeHours || 0)),
                 bailout: String(Number(v.bailout || 0)),
                 organizationId: targetOrgId,
+                // Who submitted it (when logged in) — lets a client's Rekap show
+                // only their OWN submissions. Null for anonymous landing orders.
+                createdBy: req.user?.id || null,
+                ...claimFields,
             });
             createdOrders.push(order);
         }
@@ -239,6 +260,9 @@ router.post('/public', validate(publicOrderSchema), async (req, res, next) => {
             carsById,
             customer,
             source: req.user ? 'dashboard' : 'landing',
+            // Pre-expansion request so the alert reads "2 unit MPV / 1 unit SUV"
+            // instead of N identical expanded rows.
+            requestVehicles: rawVehicles,
         }).catch(() => { /* logged inside */ });
 
         const grandTotal = createdOrders.reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
@@ -283,6 +307,15 @@ router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
     try {
         const stats = await orderService.getStats(req.user);
         res.json(stats);
+    } catch (error) { next(error); }
+});
+
+// Stage 2 — claimable bookings for the caller (unclaimed, in scope).
+// Registered BEFORE `/:id` so the literal path isn't captured as an id.
+router.get('/claimable', requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+        const rows = await orderService.findClaimable(req.user);
+        res.json({ data: rows, total: rows.length });
     } catch (error) { next(error); }
 });
 
@@ -613,6 +646,14 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             }
         }
 
+        // Initial ownership (the 3 rules). An agency admin creating via Tambah
+        // Rekap owns the order immediately (Rule 3). A client admin's order is
+        // routed by its company's agency count (Rule 1 / Rule 2).
+        const claimFields = await orderService.resolveInitialClaim({
+            user: req.user,
+            targetOrgId,
+        });
+
         // Dates (shared across all vehicles in the booking)
         const now = new Date();
         const pickupDate = body.pickupDate ? new Date(body.pickupDate) : now;
@@ -665,6 +706,7 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
                 orderNumber: sharedOrderNumber,
                 carId: v.carId || null,
                 customerId: customer.id,
+                customerName: body.customerName || customer.name, // exact form "Nama"
                 driverId: v.driverId || null,
                 pickupDate,
                 returnDate,
@@ -682,6 +724,7 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
                 organizationId: targetOrgId,
                 createdBy: req.user.id,
                 isDemo: req.user.isDemo || false,
+                ...claimFields,
             });
             createdOrders.push(order);
         }
@@ -797,6 +840,52 @@ router.put('/booking/:orderNumber/cancel', requireAuth, requireAdmin, activityLo
             return res.status(404).json({ error: 'Booking tidak ditemukan atau sudah selesai/dibatalkan.' });
         }
         res.json({ cancelled: cancelled.length, orderNumber: req.params.orderNumber });
+    } catch (error) { next(error); }
+});
+
+// ─── Stage 2: BULK claim several bookings at once (admin+ only) ───────
+// 2-segment literal path — no clash with the 3-segment
+// /booking/:orderNumber/claim or with /:id. Registered before them anyway.
+const claimBulkSchema = z.object({
+    orderNumbers: z.array(z.string().min(1)).min(1).max(2000),
+});
+
+router.put('/booking/claim-bulk', requireAuth, requireAdmin, validate(claimBulkSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const summary = await orderService.claimManyByOrderNumber(req.body.orderNumbers, req.user);
+        if (!summary.bookings) return res.status(404).json({ error: 'Tidak ada booking yang bisa diklaim.' });
+        // ONE summary notification for the whole bulk action (firing one per
+        // booking would mean hundreds of Telegram calls for a large claim).
+        notifyOrderClaimed({
+            orderNumber: `${summary.bookings} booking`,
+            claimerName: req.user?.name || req.user?.email,
+            claimerRole: req.user?.accountType === 'agency' ? 'agency' : 'client',
+            vehicleCount: summary.vehicles,
+        }).catch(() => { /* logged inside */ });
+        res.json(summary);
+    } catch (error) { next(error); }
+});
+
+// ─── Stage 2: claim / release an entire booking (admin+ only) ─────────
+router.put('/booking/:orderNumber/claim', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const claimed = await orderService.claimByOrderNumber(req.params.orderNumber, req.user);
+        if (!claimed.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
+        notifyOrderClaimed({
+            orderNumber: req.params.orderNumber,
+            claimerName: req.user?.name || req.user?.email,
+            claimerRole: req.user?.accountType === 'agency' ? 'agency' : 'client',
+            vehicleCount: claimed.length,
+        }).catch(() => { /* logged inside */ });
+        res.json({ claimed: claimed.length, orderNumber: req.params.orderNumber });
+    } catch (error) { next(error); }
+});
+
+router.put('/booking/:orderNumber/release', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        const released = await orderService.releaseByOrderNumber(req.params.orderNumber);
+        if (!released.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
+        res.json({ released: released.length, orderNumber: req.params.orderNumber });
     } catch (error) { next(error); }
 });
 

@@ -258,8 +258,13 @@ router.post('/', requireAdmin, async (req, res, next) => {
 
         res.status(201).json(updated);
     } catch (error) {
-        const msg = error?.message || '';
-        if (msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('duplicate')) {
+        // Postgres unique_violation is code 23505. With Drizzle + postgres-js
+        // the original driver error (with the code) is on error.cause, while
+        // error.message is just "Failed query: …", so we must inspect both the
+        // code and the combined message text.
+        const code = error?.code || error?.cause?.code;
+        const msg = `${error?.message || ''} ${error?.cause?.message || ''}`.toLowerCase();
+        if (code === '23505' || msg.includes('already exists') || msg.includes('duplicate') || msg.includes('unique constraint')) {
             return res.status(409).json({ error: 'Email sudah terdaftar.' });
         }
         next(error);

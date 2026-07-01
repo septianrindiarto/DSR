@@ -15,8 +15,81 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { generateUniqueInviteCode } from '../services/invite-code.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
+import { documentService } from '../services/document.service.js';
+import { relationshipService } from '../services/relationship.service.js';
 
 const router = Router();
+
+// ─── Stage 2: client ↔ agency relationships + affiliate / agency codes ───────
+
+// PUBLIC — approve a pending agency↔client link from the email link.
+router.get('/approve-link', async (req, res) => {
+    try {
+        const updated = await relationshipService.approveLinkByToken(req.query.token);
+        const ok = Boolean(updated);
+        res.status(ok ? 200 : 404).send(`<!doctype html><meta charset="utf-8">
+<body style="font-family:system-ui;background:#fcf8f8;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0">
+<div style="max-width:420px;background:#fff;border:1px solid #eacdce;border-radius:12px;padding:32px;text-align:center">
+<h2 style="color:${ok ? '#16a34a' : '#ff0008'};margin:0 0 8px">${ok ? 'Kemitraan disetujui' : 'Tautan tidak valid'}</h2>
+<p style="color:#555">${ok ? 'Agency kini dapat melihat order perusahaan Anda.' : 'Tautan persetujuan tidak ditemukan atau sudah digunakan.'}</p>
+</div></body>`);
+    } catch (err) {
+        res.status(500).send('Terjadi kesalahan.');
+    }
+});
+
+const REL = ROLE_GROUPS.ANY_AUTHENTICATED;
+
+router.get('/my-agencies', requireAuth, requireRole(REL), async (req, res, next) => {
+    try { res.json({ data: await relationshipService.listAgenciesForClient(req.user.organizationId) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/my-agencies', requireAuth, requireRole(REL), async (req, res, next) => {
+    try {
+        const result = await relationshipService.addAgencyByCode(req.user.organizationId, req.body.agencyCode, req.user.id);
+        res.json(result);
+    } catch (err) { next(err); }
+});
+
+router.get('/my-clients', requireAuth, requireRole(REL), async (req, res, next) => {
+    try { res.json({ data: await relationshipService.listClientsForAgency(req.user.organizationId) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/my-clients', requireAuth, requireRole(REL), async (req, res, next) => {
+    try {
+        const result = await relationshipService.agencyAddClient(req.user.organizationId, Number(req.body.clientOrgId), req.user.id);
+        res.json(result);
+    } catch (err) { next(err); }
+});
+
+router.delete('/links/:id', requireAuth, requireRole(REL), async (req, res, next) => {
+    try {
+        const removed = await relationshipService.removeLink(Number(req.params.id), req.user.organizationId);
+        if (!removed) return res.status(404).json({ error: 'Tautan tidak ditemukan.' });
+        res.json({ removed: true });
+    } catch (err) { next(err); }
+});
+
+router.post('/affiliate-code', requireAuth, requireRole(REL), async (req, res, next) => {
+    try { res.json({ affiliateCode: await relationshipService.getOrCreateAffiliateCode(req.user.id) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/agency-code', requireAuth, requireRole(REL), async (req, res, next) => {
+    try { res.json({ agencyCode: await relationshipService.getOrCreateAgencyCode(req.user.organizationId) }); }
+    catch (err) { next(err); }
+});
+
+// Reserve the next company-wide letter number (No.YY/DSR/NNN). Shared across
+// document types (surat pengantar tagihan, invoice cover, penawaran, …).
+router.post('/next-letter-number', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+    try {
+        const result = await documentService.getNextLetterNumber(req.user.organizationId);
+        res.json(result);
+    } catch (error) { next(error); }
+});
 
 // Helper — load the caller's org row and verify they're its admin.
 async function loadCallerOrgIfAdmin(req, res) {

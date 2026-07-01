@@ -196,6 +196,11 @@ export const api = {
         cancelBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/cancel`, {}),
         // Tier 2 multi-vehicle: delete an entire booking by its order code.
         removeBooking: (orderNumber) => api.delete(`/api/orders/booking/${encodeURIComponent(orderNumber)}`),
+        // Stage 2: claim / release an entire booking; list claimable bookings.
+        claimable: () => api.get('/api/orders/claimable'),
+        claimBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/claim`, {}),
+        claimBookingsBulk: (orderNumbers) => api.put('/api/orders/booking/claim-bulk', { orderNumbers }),
+        releaseBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/release`, {}),
         sendConfirmation: (id) => api.post(`/api/orders/${id}/send-confirmation`, {}),
         stats: () => api.get('/api/orders/stats'),
         exportData: () => api.get('/api/orders/data/export'),
@@ -384,6 +389,16 @@ export const api = {
         rotateInviteCode: () => api.post('/api/orgs/my-invite-code/rotate', {}),
         getInfo: () => api.get('/api/orgs/my-info'),
         updateInfo: (data) => api.put('/api/orgs/my-info', data),
+        // Reserve the next company-wide letter number (No.YY/DSR/NNN).
+        nextLetterNumber: () => api.post('/api/orgs/next-letter-number', {}),
+        // Stage 2 — client ↔ agency relationships + affiliate / agency codes.
+        myAgencies: () => api.get('/api/orgs/my-agencies'),
+        addAgency: (agencyCode) => api.post('/api/orgs/my-agencies', { agencyCode }),
+        myClients: () => api.get('/api/orgs/my-clients'),
+        addClient: (clientOrgId) => api.post('/api/orgs/my-clients', { clientOrgId }),
+        removeLink: (id) => api.delete(`/api/orgs/links/${id}`),
+        affiliateCode: () => api.post('/api/orgs/affiliate-code', {}),
+        agencyCode: () => api.post('/api/orgs/agency-code', {}),
     },
 
     // Access Requests (Phase 3)

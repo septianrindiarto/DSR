@@ -20,6 +20,7 @@ const CAR_CATEGORIES = [
   { value: "MPV",      label: "MPV",      hint: "Contoh: Avanza, Xenia" },
   { value: "SUV",      label: "SUV",      hint: "Contoh: Innova, Fortuner" },
   { value: "City Car", label: "City Car", hint: "Contoh: Brio, Agya" },
+  { value: "LCV",      label: "LCV",      hint: "Contoh: Hiace, Elf" },
   { value: "Pickup",   label: "Pickup",   hint: "Muatan kurang dari 1.5 Ton" },
   { value: "CDE",      label: "CDE",      hint: "Engkel, 2 sampai 3 Ton" },
   { value: "Lainnya",  label: "Lainnya",  hint: "Isi keterangan di kolom detail" },
@@ -89,7 +90,9 @@ export default function DashboardBookingForm({ onCreated }) {
     if (!me) return;
     setForm(prev => ({
       ...prev,
-      fullName: prev.fullName || me.name || "",
+      // Do NOT prefill the Nama field with the account/agency name — the Nama
+      // must reflect the actual order PIC the user types, not "CV. DSR Test".
+      // Only the contact number is safe to prefill.
       whatsapp: prev.whatsapp || me.customer?.phone || me.customer?.whatsapp || me.phone || "",
     }));
   }, [me]);
@@ -129,6 +132,19 @@ export default function DashboardBookingForm({ onCreated }) {
     0,
   );
 
+  // Submit stays locked until every mandatory field is valid: name, whatsapp,
+  // both dates, and each vehicle row has a category (+ a note when "Lainnya").
+  const canSubmit = useMemo(() => {
+    if (!form.fullName.trim()) return false;
+    if (!form.whatsapp.trim()) return false;
+    if (!form.pickupDate || !form.returnDate) return false;
+    if (form.vehicles.length === 0) return false;
+    return form.vehicles.every(
+      v => v.carCategory && v.package && v.package.trim() &&
+        (v.carCategory !== "Lainnya" || v.carCategoryNote.trim()),
+    );
+  }, [form]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setInfo(""); setError("");
@@ -148,6 +164,10 @@ export default function DashboardBookingForm({ onCreated }) {
       }
       if (v.carCategory === "Lainnya" && !v.carCategoryNote.trim()) {
         setError(`Kendaraan baris ${i + 1}: isi keterangan untuk kategori Lainnya.`);
+        return;
+      }
+      if (!v.package || !v.package.trim()) {
+        setError(`Kendaraan baris ${i + 1}: pilih paket.`);
         return;
       }
       const qty = Math.max(1, Math.min(10, Number(v.quantity) || 1));
@@ -212,7 +232,7 @@ export default function DashboardBookingForm({ onCreated }) {
 
       <div className="p-5 space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FieldL label="Nama" hint="Nama pemesan / PIC">
+          <FieldL label="Nama *" hint="Nama pemesan / PIC">
             <input
               type="text"
               value={form.fullName}
@@ -223,7 +243,7 @@ export default function DashboardBookingForm({ onCreated }) {
             />
           </FieldL>
 
-          <FieldL label="No. Whatsapp" hint="Nomor kontak pemesan (bisa berbeda dari nomor akun)">
+          <FieldL label="No. Whatsapp *" hint="Nomor kontak pemesan (bisa berbeda dari nomor akun)">
             <input
               type="tel"
               value={form.whatsapp}
@@ -265,7 +285,7 @@ export default function DashboardBookingForm({ onCreated }) {
 
         {/* Dates inline */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FieldL label="Tgl Pemakaian">
+          <FieldL label="Tgl Pemakaian *">
             <input
               type="date"
               value={form.pickupDate}
@@ -275,7 +295,7 @@ export default function DashboardBookingForm({ onCreated }) {
             />
           </FieldL>
 
-          <FieldL label="Tgl Selesai">
+          <FieldL label="Tgl Selesai *">
             <input
               type="date"
               value={form.returnDate}
@@ -354,8 +374,9 @@ export default function DashboardBookingForm({ onCreated }) {
       <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2">
         <button
           type="submit"
-          disabled={submitting}
-          className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary-dark cursor-pointer disabled:opacity-60"
+          disabled={submitting || !canSubmit}
+          title={!canSubmit ? "Lengkapi semua kolom wajib terlebih dahulu" : undefined}
+          className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary-dark cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {submitting && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
           <span className="material-symbols-outlined text-[18px]">send</span>
@@ -403,7 +424,7 @@ function VehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
         <div className="md:col-span-6">
-          <FieldL label="Kategori" hint={selectedCategory?.hint || "Pilih jenis kendaraan"}>
+          <FieldL label="Kategori *" hint={selectedCategory?.hint || "Pilih jenis kendaraan"}>
             <select
               value={vehicle.carCategory}
               onChange={e => onChange("carCategory", e.target.value)}
@@ -419,7 +440,7 @@ function VehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
         </div>
 
         <div className="md:col-span-2">
-          <FieldL label="Jumlah" hint="1-10 unit">
+          <FieldL label="Jumlah *" hint="1-10 unit">
             <input
               type="number"
               min={1}
@@ -433,12 +454,13 @@ function VehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
         </div>
 
         <div className="md:col-span-4">
-          <FieldL label="Paket" hint="Opsional">
+          <FieldL label="Paket *">
             <input
               list={`paket-options-${index}`}
               value={vehicle.package}
               onChange={e => onChange("package", e.target.value)}
               className="input"
+              required
               placeholder="All In / Mobil dan Driver / Lepas Kunci"
             />
             <datalist id={`paket-options-${index}`}>

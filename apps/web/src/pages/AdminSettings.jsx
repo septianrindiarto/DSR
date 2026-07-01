@@ -4,6 +4,7 @@ import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../context/AuthContext";
 import { api, apiCache, swr } from "../lib/api";
 import InviteCodeCard from "../components/InviteCodeCard";
+import RelationshipManager from "../components/RelationshipManager";
 import { useToast } from "../components/Toast";
 
 // ─── Defaults — used only for users with NO organizationId (legacy agency
@@ -57,6 +58,7 @@ function saveObj(key, value) {
 const ALL_SECTIONS = [
   { id: "profile",       label: "Profil",                 icon: "person" },
   { id: "company",       label: "Informasi Perusahaan",   icon: "business" },
+  { id: "relationships", label: "Mitra",                  icon: "handshake" },
   { id: "numbering",     label: "Penomoran Dokumen",      icon: "tag" },
   { id: "sync",          label: "Sinkronisasi Data",      icon: "cloud_sync" },
   { id: "notifications", label: "Notifikasi",             icon: "notifications" },
@@ -77,7 +79,7 @@ function getVisibleSections(user) {
 
   // Client side
   const allowed = new Set(['profile', 'prefs']);
-  if (hasOrg) allowed.add('company');
+  if (hasOrg) { allowed.add('company'); allowed.add('relationships'); }
   return ALL_SECTIONS.filter(s => allowed.has(s.id));
 }
 
@@ -223,6 +225,7 @@ export default function AdminSettings() {
             || user?.accountType === 'agency'
             || user?.role === 'superadmin'
           } />}
+          {activeSection === "relationships" && <RelationshipManager />}
           {activeSection === "numbering" && <NumberingSection numbering={numbering} setNumbering={setNumbering} onSave={saveNumbering} />}
           {activeSection === "sync"          && <SyncSection syncStatus={syncStatus} syncing={syncing} onTrigger={triggerSync} />}
           {activeSection === "notifications" && <NotificationsSection />}

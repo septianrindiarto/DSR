@@ -24,8 +24,9 @@ export default function AdminLogin() {
   const [customerType, setCustomerType] = useState("private");
   const [companyName, setCompanyName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
+  const [agencyCode, setAgencyCode] = useState("");
   const navigate = useNavigate();
-  const { login, register, sessionExpired, clearSessionExpired } = useAuth();
+  const { login, register, logout, sessionExpired, clearSessionExpired } = useAuth();
   const { t } = useLanguage();
 
   // Demo credentials — seeded by `npm run db:seed` in the API.
@@ -62,6 +63,8 @@ export default function AdminLogin() {
           // Phase 4A: invite code joins an existing org. Mutually exclusive
           // with companyName (the backend enforces this too).
           inviteCode: inviteCode.trim() || null,
+          // Stage 2 — optional agency code links the new client to that agency.
+          agencyCode: (!isAgency && agencyCode.trim()) ? agencyCode.trim() : null,
           // Agency mode is only used by DSR internal devs — sets role=admin.
           // Client mode → role=client (the default).
           accountType: isAgency ? "agency" : "client",
@@ -70,7 +73,23 @@ export default function AdminLogin() {
         // show the "cek inbox" panel and let the user click the link.
         setRegisteredEmail(email);
       } else {
-        await login(email, password);
+        const result = await login(email, password);
+        // Enforce that the chosen login mode matches the account type: an
+        // agency account must use the Agency menu and a client account the
+        // Client menu. Superadmin is internal and may use either.
+        const acct = result?.user?.accountType;
+        const role = result?.user?.role;
+        if (acct && role !== 'superadmin') {
+          const isAgencyAcct = acct === 'agency';
+          if (isAgency !== isAgencyAcct) {
+            await logout(); // discard the session we just created
+            setError(isAgency
+              ? "Akun ini bukan akun Agency. Silakan masuk melalui menu Client / Perorangan."
+              : "Akun ini adalah akun Agency. Silakan masuk melalui menu Agency / Perusahaan.");
+            setLoading(false);
+            return;
+          }
+        }
         navigate("/admin/dashboard");
       }
     } catch (err) {
@@ -163,30 +182,6 @@ export default function AdminLogin() {
                 </div>
                 <span className="material-symbols-outlined text-slate-300 group-hover:text-amber-500 transition-colors">arrow_forward</span>
               </button>
-            </div>
-
-            {/* Demo login — lets visitors explore the admin panel instantly */}
-            <div className="mt-8 pt-6 border-t border-dashed border-slate-300">
-              <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-3">
-                Hanya ingin lihat-lihat?
-              </p>
-              <button
-                onClick={handleDemoLogin}
-                disabled={loading}
-                className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold shadow-lg shadow-emerald-500/30 transition-all active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {loading ? (
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined text-[20px]">play_circle</span>
-                    Coba Demo Admin
-                  </>
-                )}
-              </button>
-              <p className="text-[11px] text-slate-400 mt-2">
-                Login otomatis sebagai admin demo · data fiktif
-              </p>
             </div>
 
             <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-primary mt-6 transition-colors">
@@ -374,8 +369,11 @@ export default function AdminLogin() {
               </div>
             )}
 
-            {/* Customer Type (Register only) — Pribadi / Perusahaan */}
-            {isRegister && (
+            {/* Customer Type (CLIENT register only) — Pribadi / Perusahaan.
+                Hidden for Agency: an agency is always a company, and its name
+                is captured by the "Nama Perusahaan" field above, so this toggle
+                + the second company-name field below don't apply. */}
+            {isRegister && !isAgency && (
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-slate-700">
                   {t('registerCustomerType')}
@@ -400,6 +398,32 @@ export default function AdminLogin() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* Agency Code (CLIENT register, private & company) — links the
+                new client to that agency. */}
+            {isRegister && !isAgency && (
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-slate-700" htmlFor="agencyCode">
+                  Kode Agency <span className="text-slate-400 text-xs font-normal">(opsional)</span>
+                </label>
+                <div className="relative group">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-primary transition-colors">
+                    <span className="material-symbols-outlined text-[20px]">handshake</span>
+                  </div>
+                  <input
+                    className="block w-full rounded-lg border border-slate-200 bg-slate-50 text-slate-900 pl-10 pr-4 py-3 text-sm focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-slate-400 transition-all outline-none uppercase tracking-wider font-mono"
+                    id="agencyCode"
+                    placeholder="ABCD2345"
+                    type="text"
+                    value={agencyCode}
+                    onChange={(e) => setAgencyCode(e.target.value.toUpperCase())}
+                    maxLength={20}
+                    autoComplete="off"
+                  />
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">Tautkan akun Anda ke agency tertentu (jika diberi kode oleh agency).</p>
               </div>
             )}
 
@@ -430,8 +454,8 @@ export default function AdminLogin() {
               </div>
             )}
 
-            {/* Company Name (Register only, when type=company AND no invite code) */}
-            {isRegister && customerType === 'company' && !inviteCode.trim() && (
+            {/* Company Name (CLIENT register only, when type=company AND no invite code) */}
+            {isRegister && !isAgency && customerType === 'company' && !inviteCode.trim() && (
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-slate-700" htmlFor="companyName">
                   {t('registerCompanyName')}
@@ -543,31 +567,6 @@ export default function AdminLogin() {
                 {isRegister ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'}
               </button>
             </div>
-
-            {/* Demo login shortcut */}
-            {!isRegister && (
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center" aria-hidden="true">
-                  <div className="w-full border-t border-dashed border-slate-200"></div>
-                </div>
-                <div className="relative flex justify-center">
-                  <span className="bg-white px-3 text-[11px] uppercase tracking-wider text-slate-400 font-semibold">
-                    atau
-                  </span>
-                </div>
-              </div>
-            )}
-            {!isRegister && (
-              <button
-                type="button"
-                onClick={handleDemoLogin}
-                disabled={loading}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-emerald-500 text-emerald-700 hover:bg-emerald-50 font-semibold transition-colors active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[20px]">play_circle</span>
-                Coba Demo Admin
-              </button>
-            )}
 
             {/* Footer Links */}
             <div className="text-center mt-2">

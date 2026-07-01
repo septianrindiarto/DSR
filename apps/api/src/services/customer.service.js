@@ -1,6 +1,6 @@
 import { db } from '../db/index.js';
 import { customers, orders } from '../db/schema.js';
-import { eq, ilike, or, asc, desc, sql, and, getTableColumns } from 'drizzle-orm';
+import { eq, ilike, or, asc, desc, sql, and, isNull, getTableColumns } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 
 export const customerService = {
@@ -68,16 +68,37 @@ export const customerService = {
         return result[0] || null;
     },
 
+    // A customer entity is uniquely identified by the COMBINATION of
+    // (name, phone, customer_type, company_name). Two bookings collapse onto the
+    // same customer row only when ALL of these match — so "septian" on a company
+    // account's phone is now its OWN customer, not the company's record. Any
+    // difference in the combination yields a distinct customer id.
     async findOrCreate(data) {
-        // Try find by phone/whatsapp first
-        if (data.phone || data.whatsapp) {
-            const searchPhone = data.phone || data.whatsapp;
-            const existing = await db.select().from(customers).where(
-                or(eq(customers.phone, searchPhone), eq(customers.whatsapp, searchPhone))
-            );
-            if (existing.length > 0) return existing[0];
+        const name = (data.name || '').trim();
+        const phone = (data.phone || data.whatsapp || '').trim();
+        const type = data.customerType || 'private';
+        const company = type === 'company' ? (data.companyName || '').trim() : '';
+
+        const conds = [
+            sql`LOWER(TRIM(${customers.name})) = ${name.toLowerCase()}`,
+            eq(customers.customerType, type),
+        ];
+        // Phone is part of the key: match either phone or whatsapp; when the
+        // booking carries no number, only match rows that also have none.
+        if (phone) {
+            conds.push(or(eq(customers.phone, phone), eq(customers.whatsapp, phone)));
+        } else {
+            conds.push(and(isNull(customers.phone), isNull(customers.whatsapp)));
         }
-        // Create new
+        // company_name completes the key for company customers.
+        if (type === 'company') {
+            conds.push(sql`LOWER(TRIM(COALESCE(${customers.companyName}, ''))) = ${company.toLowerCase()}`);
+        }
+
+        const existing = await db.select().from(customers).where(and(...conds)).limit(1);
+        if (existing.length > 0) return existing[0];
+
+        // Create new — a genuinely new (name, phone, type, company) combination.
         const result = await db.insert(customers).values(data).returning();
         return result[0];
     },

@@ -14,6 +14,12 @@ const COMPANY = {
   brand: "DSR",
   // Wider 2.70:1 invoice logo (matches the Python ReportLab generator)
   logoUrl: "/dsr-logo-invoice.png",
+  // Payment details used by Surat Pengantar Tagihan (editable per-document).
+  bankAccount: "7751108277",
+  bankName: "BCA",
+  bankHolder: "Septian Rindiarto",
+  email: "dsrjayakarya@gmail.com",
+  wa: "082219812530",
 };
 
 // ─── Indonesian number to words (terbilang) — ported from Python ─────────────
@@ -100,7 +106,7 @@ function persistTemplatesAll(all) {
 const DOC_TYPES = [
   { id: "invoice", label: "Invoice (Tagihan + Kuitansi)", icon: "receipt_long", desc: "A4 portrait — invoice di atas, kuitansi di bawah" },
   { id: "surat_jalan", label: "Surat Jalan", icon: "local_shipping", desc: "A4 landscape — bukti pemakaian mobil" },
-  { id: "kwitansi", label: "Kwitansi", icon: "payments", desc: "Tanda terima pembayaran tunggal" },
+  { id: "surat_tagihan", label: "Surat Pengantar Tagihan", icon: "request_quote", desc: "Surat pengantar rekap tagihan ke klien" },
   { id: "penawaran", label: "Surat Penawaran", icon: "request_quote", desc: "Penawaran sewa kendaraan untuk proyek" },
   { id: "perjanjian", label: "Surat Perjanjian Sewa", icon: "gavel", desc: "Kontrak legal sewa kendaraan" },
 ];
@@ -111,7 +117,7 @@ function defaultForm(type) {
   switch (type) {
     case "invoice":
       return {
-        invoiceNo: "26/DSR/INV/", clientName: "", clientAddress: "",
+        invoiceNo: "26/DSR/INV/", letterNo: "", clientName: "", clientAddress: "",
         date: today, discount: 0, autoDisc: true, pajakRate: 0,
         items: [{ user: "", driver: "", destination: "", rentDate: today, rentReturnDate: today, unit: "", plate: "", lembur: 0, inap: 0, price: 0 }],
       };
@@ -121,10 +127,19 @@ function defaultForm(type) {
         date: today, vehicle: "", plate: "", driver: "",
         items: [{ user: "", date: today, destination: "", days: 1, startTime: "", endTime: "" }],
       };
-    case "kwitansi":
+    case "surat_tagihan":
       return {
-        no: "26/DSR/KW/", from: "", forPayment: "Sewa Kendaraan Roda 4",
-        amount: 0, date: today,
+        letterNo: "",                                  // No.YY/DSR/NNN — reserve via the button
+        to: "",                                        // Kepada (client company)
+        from: 'Rental Mobil "DSR"',                    // Dari
+        lampiran: "Rekap Tagihan Sewa Kendaraan",      // Lampiran
+        usageDate: today,                              // tanggal pemakaian (for the berita)
+        date: today,                                   // tanggal surat
+        bankAccount: COMPANY.bankAccount,
+        bankName: COMPANY.bankName,
+        bankHolder: COMPANY.bankHolder,
+        email: COMPANY.email,
+        wa: COMPANY.wa,
       };
     case "penawaran":
       return {
@@ -456,14 +471,14 @@ export default function AdminDocuments() {
           endTime: "",
         }],
       });
-    } else if (docType === "kwitansi") {
-      setForm({
-        no: `26/DSR/KW/${order.orderNumber || ""}`,
-        from: customerLabel,
-        forPayment: `Sewa Kendaraan ${car.brand || ""} ${car.name || ""} ${car.licensePlate ? "(" + car.licensePlate + ")" : ""} ${order.destination ? "tujuan " + order.destination : ""}`.replace(/\s+/g, " ").trim(),
-        amount: Number(order.totalPrice || 0),
-        date: order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO(),
-      });
+    } else if (docType === "surat_tagihan") {
+      setForm(prev => ({
+        ...defaultForm("surat_tagihan"),
+        ...prev,                                       // keep a reserved letterNo if already taken
+        to: customerLabel,
+        usageDate: order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO(),
+        date: todayISO(),
+      }));
     } else if (docType === "perjanjian") {
       setForm({
         ...defaultForm("perjanjian"),
@@ -722,7 +737,7 @@ export default function AdminDocuments() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{t("documents")}</h1>
-          <p className="text-slate-500 text-sm mt-1">Buat tagihan, surat jalan, kwitansi, penawaran & perjanjian sewa</p>
+          <p className="text-slate-500 text-sm mt-1">Buat tagihan, surat jalan, surat pengantar tagihan, penawaran & perjanjian sewa</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
@@ -981,7 +996,7 @@ export default function AdminDocuments() {
             </div>
             {docType === "invoice" && <InvoiceForm form={form} setForm={setForm} openTripLookup={openTripLookup} openCompanyPicker={openCompanyPicker} />}
             {docType === "surat_jalan" && <SuratJalanForm form={form} setForm={setForm} openTripLookup={openTripLookup} />}
-            {docType === "kwitansi" && <KwitansiForm form={form} setForm={setForm} />}
+            {docType === "surat_tagihan" && <SuratTagihanForm form={form} setForm={setForm} />}
             {docType === "penawaran" && <PenawaranForm form={form} setForm={setForm} />}
             {docType === "perjanjian" && <PerjanjianForm form={form} setForm={setForm} />}
           </div>
@@ -998,7 +1013,7 @@ export default function AdminDocuments() {
               <div className="doc-preview-wrap shadow-xl print:shadow-none">
                 {docType === "invoice" && <InvoiceTemplate form={form} />}
                 {docType === "surat_jalan" && <SuratJalanTemplate form={form} />}
-                {docType === "kwitansi" && <KwitansiTemplate form={form} />}
+                {docType === "surat_tagihan" && <SuratTagihanTemplate form={form} />}
                 {docType === "penawaran" && <PenawaranTemplate form={form} />}
                 {docType === "perjanjian" && <PerjanjianTemplate form={form} />}
               </div>
@@ -1347,6 +1362,8 @@ export default function AdminDocuments() {
         .doc-page-a4      { width: 210mm; min-height: 297mm; }
         .doc-page-a4-land { width: 297mm; min-height: 210mm; padding: 10mm 15mm; }
         .doc-page-receipt { width: 210mm; min-height: 100mm; }
+        /* Surat Pengantar Tagihan — fits within ~1/4 of an A4 sheet (≈74mm). */
+        .doc-page-quarter { width: 210mm; min-height: 74mm; padding: 8mm 15mm; }
         .doc-table { width: 100%; border-collapse: collapse; font-size: 9pt; }
         .doc-table th, .doc-table td { border: 0.5pt solid #000; padding: 4pt 5pt; vertical-align: middle; }
         .doc-table th { background: #1f4f77; color: white; font-weight: bold; text-align: center; font-size: 9pt; }
@@ -1497,7 +1514,24 @@ function TextArea({ label, value, onChange, rows = 3 }) {
 }
 
 function InvoiceForm({ form, setForm, openTripLookup, openCompanyPicker }) {
+  const toast = useToast();
+  const [reservingLetter, setReservingLetter] = useState(false);
   const upd = (patch) => setForm({ ...form, ...patch });
+
+  // Optional company letter number for invoices (same counter as Surat
+  // Pengantar Tagihan). Most invoices don't need one, so it's opt-in.
+  async function reserveLetterNo() {
+    setReservingLetter(true);
+    try {
+      const res = await api.myOrg.nextLetterNumber();
+      upd({ letterNo: res.letterNumber });
+      toast.success(`Nomor surat ${res.letterNumber} diambil.`);
+    } catch (e) {
+      toast.error("Gagal mengambil nomor surat: " + e.message);
+    } finally {
+      setReservingLetter(false);
+    }
+  }
   const updItem = (i, patch) => {
     const items = form.items.slice();
     items[i] = { ...items[i], ...patch };
@@ -1516,6 +1550,25 @@ function InvoiceForm({ form, setForm, openTripLookup, openCompanyPicker }) {
       <div className="grid grid-cols-2 gap-3">
         <Field label="No. Invoice" value={form.invoiceNo} onChange={(v) => upd({ invoiceNo: v })} />
         <Field label="Tanggal" type="date" value={form.date} onChange={(v) => upd({ date: v })} />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1">No. Surat <span className="font-normal text-slate-400">(opsional)</span></label>
+        <div className="flex gap-2">
+          <input
+            value={form.letterNo ?? ""}
+            onChange={(e) => upd({ letterNo: e.target.value })}
+            placeholder="No.26/DSR/070 — kosongkan jika tidak perlu"
+            className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+          />
+          <button
+            type="button"
+            onClick={reserveLetterNo}
+            disabled={reservingLetter}
+            className="px-3 py-2 rounded-lg bg-white border border-primary/40 text-primary text-sm font-medium hover:bg-primary/5 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+          >
+            {reservingLetter ? "..." : "Ambil Nomor"}
+          </button>
+        </div>
       </div>
       <div>
         <div className="flex items-center justify-between mb-1">
@@ -1701,17 +1754,67 @@ function SuratJalanForm({ form, setForm, openTripLookup }) {
   );
 }
 
-function KwitansiForm({ form, setForm }) {
+function SuratTagihanForm({ form, setForm }) {
+  const toast = useToast();
+  const [reserving, setReserving] = useState(false);
   const upd = (patch) => setForm({ ...form, ...patch });
+
+  // Reserve the next company-wide letter number from the backend counter.
+  async function reserveNumber() {
+    setReserving(true);
+    try {
+      const res = await api.myOrg.nextLetterNumber();
+      upd({ letterNo: res.letterNumber });
+      toast.success(`Nomor surat ${res.letterNumber} diambil.`);
+    } catch (e) {
+      toast.error("Gagal mengambil nomor surat: " + e.message);
+    } finally {
+      setReserving(false);
+    }
+  }
+
   return (
     <>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="No. Kwitansi" value={form.no} onChange={(v) => upd({ no: v })} />
-        <Field label="Tanggal" type="date" value={form.date} onChange={(v) => upd({ date: v })} />
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1">No. Surat</label>
+        <div className="flex gap-2">
+          <input
+            value={form.letterNo ?? ""}
+            onChange={(e) => upd({ letterNo: e.target.value })}
+            placeholder="No.26/DSR/070"
+            className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+          />
+          <button
+            type="button"
+            onClick={reserveNumber}
+            disabled={reserving}
+            className="px-3 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+          >
+            {reserving ? "..." : "Ambil Nomor"}
+          </button>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-1">Nomor urut surat perusahaan — otomatis &amp; berurutan, berlaku lintas jenis dokumen.</p>
       </div>
-      <Field label="Sudah Terima Dari" value={form.from} onChange={(v) => upd({ from: v })} />
-      <TextArea label="Untuk Pembayaran" value={form.forPayment} onChange={(v) => upd({ forPayment: v })} rows={3} />
-      <Field label="Nominal (Rp)" type="number" value={form.amount} onChange={(v) => upd({ amount: v })} />
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Kepada (Klien)" value={form.to} onChange={(v) => upd({ to: v })} />
+        <Field label="Tanggal Surat" type="date" value={form.date} onChange={(v) => upd({ date: v })} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Dari" value={form.from} onChange={(v) => upd({ from: v })} />
+        <Field label="Tgl Pemakaian (di berita)" type="date" value={form.usageDate} onChange={(v) => upd({ usageDate: v })} />
+      </div>
+      <Field label="Lampiran" value={form.lampiran} onChange={(v) => upd({ lampiran: v })} />
+
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="No. Rekening" value={form.bankAccount} onChange={(v) => upd({ bankAccount: v })} />
+        <Field label="Bank" value={form.bankName} onChange={(v) => upd({ bankName: v })} />
+        <Field label="a.n." value={form.bankHolder} onChange={(v) => upd({ bankHolder: v })} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Email Notifikasi" value={form.email} onChange={(v) => upd({ email: v })} />
+        <Field label="WA Notifikasi" value={form.wa} onChange={(v) => upd({ wa: v })} />
+      </div>
     </>
   );
 }
@@ -1860,6 +1963,9 @@ function InvoiceTemplate({ form }) {
       {/* ── TOP HALF — Invoice ────────────────────────────────── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
         <CompanyHeader />
+
+        {/* Optional company letter number (top-left), only when reserved. */}
+        {form.letterNo && <div style={{ fontSize: "7.5pt", marginTop: "2mm" }}>{form.letterNo}</div>}
 
         <div style={{ textAlign: "center", marginTop: "4mm" }}>
           <div style={{ fontSize: "18pt", fontWeight: "bold" }}>INVOICE</div>
@@ -2061,43 +2167,61 @@ function SuratJalanTemplate({ form }) {
   );
 }
 
-function KwitansiTemplate({ form }) {
+function SuratTagihanTemplate({ form }) {
+  // Berita body — mirrors the standard billing-transmittal wording, with the
+  // usage date and payment details interpolated from the form.
+  const berita = `Bersama ini Kami sampaikan rekap tagihan atas pemakaian pada tanggal ${fmtDateID(form.usageDate)}. ` +
+    `Pembayaran atas tagihan tersebut hendaknya ditransfer ke rek. ${form.bankAccount || "-"} an. ${form.bankHolder || "-"} ` +
+    `pada Bank ${form.bankName || "-"} dan harap memberikan Notifikasi pembayaran pada email ${form.email || "-"} ` +
+    `atau WA di ${form.wa || "-"}`;
+
+  const metaRow = (label, value) => (
+    <div style={{ display: "flex", marginBottom: "1mm" }}>
+      <div style={{ width: "20mm", fontWeight: "bold" }}>{label}</div>
+      <div style={{ width: "3mm" }}>:</div>
+      <div style={{ flex: 1 }}>{value || "-"}</div>
+    </div>
+  );
+
   return (
-    <div className="doc-page doc-page-receipt">
-      <CompanyHeader />
-      <div style={{ marginTop: "5mm", textAlign: "center", fontSize: "16pt", fontWeight: "bold" }}>KWITANSI</div>
-      <div style={{ textAlign: "center", fontSize: "8pt", marginBottom: "5mm" }}>No. {form.no}</div>
+    <div className="doc-page doc-page-quarter" style={{ fontSize: "8.5pt", lineHeight: 1.4 }}>
+      {/* Header — same company header as the other documents */}
+      <CompanyHeader compact />
 
-      <div style={{ fontSize: "10pt", marginTop: "5mm" }}>
-        <div style={{ display: "flex", marginBottom: "3mm" }}>
-          <div style={{ width: "38mm", fontWeight: "bold" }}>Sudah Terima Dari</div>
-          <div style={{ width: "5mm" }}>:</div>
-          <div style={{ flex: 1, fontWeight: "bold" }}>{form.from || "-"}</div>
-        </div>
-        <div style={{ display: "flex", marginBottom: "3mm" }}>
-          <div style={{ width: "38mm", fontWeight: "bold" }}>Terbilang</div>
-          <div style={{ width: "5mm" }}>:</div>
-          <div style={{ flex: 1 }}>
-            <span className="terbilang-bg" style={{ fontStyle: "italic", display: "inline-block", width: "100%" }}>{terbilang(form.amount)}</span>
-          </div>
-        </div>
-        <div style={{ display: "flex", marginBottom: "5mm" }}>
-          <div style={{ width: "38mm", fontWeight: "bold" }}>Untuk Pembayaran</div>
-          <div style={{ width: "5mm" }}>:</div>
-          <div style={{ flex: 1 }}>{form.forPayment || "-"}</div>
-        </div>
+      {/* Company letter number (top-left, distinct from any invoice number) */}
+      <div style={{ fontSize: "7.5pt", marginTop: "2.5mm" }}>{form.letterNo || "No. ........./DSR/........."}</div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "8mm" }}>
-          <div style={{ fontWeight: "bold", display: "flex", gap: "5mm" }}>
-            <span>Nominal :</span>
-            <span style={{ fontStyle: "italic", fontWeight: "bold", borderBottom: "0.8pt solid #000" }}>{rp(form.amount)},00</span>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div>Bandung, {fmtDateID(form.date)}</div>
-            <div>{COMPANY.brand}</div>
-            <div style={{ height: "18mm" }} />
-            <div style={{ borderTop: "0.5pt solid #000", display: "inline-block", paddingTop: "1mm", minWidth: "40mm" }}>( {COMPANY.signatory} )</div>
-          </div>
+      {/* Title */}
+      <div style={{ textAlign: "center", fontSize: "12pt", fontWeight: "bold", textDecoration: "underline", margin: "1.5mm 0 3mm" }}>
+        SURAT PENGANTAR TAGIHAN
+      </div>
+
+      {/* Meta block */}
+      {metaRow("Kepada", form.to)}
+      {metaRow("Dari", form.from)}
+      {metaRow("Lampiran", form.lampiran)}
+
+      {/* Berita */}
+      <div style={{ display: "flex", marginTop: "1mm" }}>
+        <div style={{ width: "20mm", fontWeight: "bold" }}>Berita</div>
+        <div style={{ width: "3mm" }}>:</div>
+        <div style={{ flex: 1 }} />
+      </div>
+      <div style={{ textAlign: "justify", marginTop: "1mm", marginLeft: "23mm", lineHeight: 1.5 }}>{berita}</div>
+
+      {/* Signatures */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "7mm" }}>
+        <div>
+          <div>Yang Menerima</div>
+          <div>{form.to || "-"}</div>
+          <div style={{ height: "11mm" }} />
+          <div>(..............................)</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div>Bandung, {fmtDateID(form.date)}</div>
+          <div>{COMPANY.brand}</div>
+          <div style={{ height: "11mm" }} />
+          <div>( {COMPANY.signatory} )</div>
         </div>
       </div>
     </div>

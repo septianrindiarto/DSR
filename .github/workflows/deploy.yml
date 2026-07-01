@@ -1,0 +1,40 @@
+name: Deploy to VPS
+
+# Auto-deploys on every push to main, and can be run manually from the
+# Actions tab ("Run workflow"). It does a CODE deploy only (pull → install →
+# build → reload). Database migrations are deliberately NOT run here — they're
+# a manual, deliberate step (see docs/CICD_GitHub_Actions_Setup.md §6).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never let two deploys run at once; cancel an in-progress one if a newer push lands.
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd /home/dsr/dsr
+            echo "[deploy] pulling latest…"
+            git pull --ff-only
+            echo "[deploy] installing API deps…"
+            cd apps/api && npm ci --omit=dev
+            echo "[deploy] building web…"
+            cd ../web && npm ci && npm run build
+            echo "[deploy] reloading API…"
+            pm2 reload dsr-api
+            echo "[deploy] done at $(date)"

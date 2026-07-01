@@ -548,7 +548,7 @@ export default function AdminOrders() {
       case "kodeTransaksi": return <span className="font-mono text-xs font-bold text-primary">{order.orderNumber}</span>;
       case "nama": return (
         <div>
-          <p className="font-medium text-slate-900">{order.customer?.name || "-"}</p>
+          <p className="font-medium text-slate-900">{order.customerName || order.customer?.name || "-"}</p>
           <p className="text-xs text-slate-400">{order.customer?.phone || ""}</p>
         </div>
       );
@@ -669,6 +669,8 @@ export default function AdminOrders() {
   // The per-row action buttons (view / edit / delete). Shared by single rows
   // and the per-car child rows of a multi-car booking.
   function renderActionsCell(order) {
+    // Client accounts (any client role) are read-only: no view/edit/delete.
+    if (isClient) return null;
     return (
       <td className="px-3 py-3 text-center align-middle">
         <div className="flex items-center justify-center gap-1">
@@ -733,10 +735,17 @@ export default function AdminOrders() {
   // them in. For clients this preserves the screenshot ordering. For agency
   // it preserves canonical COLUMN_DEFS order because their default was
   // ALL_COLUMN_KEYS which is itself canonical.
+  // Columns clients must never see (even if an old saved layout included them):
+  // bailout, overtime (lembur), overnight (inap), contract price (kontrak harga),
+  // and created-by (dibuat oleh).
+  const CLIENT_HIDDEN_COLS = ["bailout", "lembur", "inap", "kontrakHarga", "createdBy"];
   const visibleCols = useMemo(() => {
     const byKey = new Map(COLUMN_DEFS.map(c => [c.key, c]));
-    return visibleColumns.map(k => byKey.get(k)).filter(Boolean);
-  }, [visibleColumns]);
+    return visibleColumns
+      .map(k => byKey.get(k))
+      .filter(Boolean)
+      .filter(c => !(isClient && CLIENT_HIDDEN_COLS.includes(c.key)));
+  }, [visibleColumns, isClient]);
 
   // ─── Client-side search ──────────────────────────────────────────────
   // Build a flat string of every value the user can SEE on the row, then
@@ -933,6 +942,32 @@ export default function AdminOrders() {
     return { imported: result.imported ?? 0, skipped: result.skipped ?? 0, errors: result.errors };
   }
 
+  // Client-only one-click download: pulls the caller's orders (already
+  // org-scoped server-side), applies the CURRENT status + search filters, and
+  // saves a CSV. No modal, no import — clients just grab their filtered rekap.
+  async function handleClientDownload() {
+    try {
+      const data = await api.orders.exportData();
+      let rows = Array.isArray(data) ? data : [];
+      if (statusFilter && statusFilter !== "all") {
+        rows = rows.filter(r => String(r.status || "").toLowerCase() === statusFilter);
+      }
+      const q = search.trim().toLowerCase();
+      if (q) rows = rows.filter(r => JSON.stringify(r).toLowerCase().includes(q));
+      if (rows.length === 0) { toast.error("Tidak ada data untuk diunduh."); return; }
+      const headers = Object.keys(rows[0]);
+      const cell = (v) => {
+        const s = v == null ? "" : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const csv = [headers.join(","), ...rows.map(r => headers.map(h => cell(r[h])).join(","))].join("\n");
+      downloadFile(`rekap-order-${Date.now()}.csv`, "﻿" + csv);
+      toast.success(`${rows.length} baris diunduh.`);
+    } catch (e) {
+      toast.error(e.message || "Gagal mengunduh rekap.");
+    }
+  }
+
   // No full-page spinner gate — page renders immediately. Empty-state row
   // in the table body covers the brief moment before the first fetch returns.
 
@@ -945,21 +980,34 @@ export default function AdminOrders() {
           <p className="text-slate-500 text-sm mt-1">Kelola semua pesanan sewa mobil</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Export on the left, Import on the right */}
-          <button
-            onClick={() => setShowExport(true)}
-            className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-[18px]">file_download</span>
-            {t("export")}
-          </button>
-          <button
-            onClick={() => setShowImport(true)}
-            className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-[18px]">file_upload</span>
-            {t("import")}
-          </button>
+          {/* Agency: full Export + Import. Client: one-click Download Rekap
+              (current filters), no import, no modal. */}
+          {isClient ? (
+            <button
+              onClick={handleClientDownload}
+              className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">file_download</span>
+              Unduh Rekap
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => setShowExport(true)}
+                className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer flex items-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[18px]">file_download</span>
+                {t("export")}
+              </button>
+              <button
+                onClick={() => setShowImport(true)}
+                className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer flex items-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[18px]">file_upload</span>
+                {t("import")}
+              </button>
+            </>
+          )}
           {/* "Tambah Rekap" is now CLIENT-HIDDEN only.
               Clients book from the Dashboard (logged-in) or Landing (public)
               now, so they don't need this button. Agency users keep the
@@ -1051,7 +1099,7 @@ export default function AdminOrders() {
                 </button>
               </div>
               <div className="max-h-72 overflow-y-auto space-y-1">
-                {COLUMN_DEFS.map(col => (
+                {COLUMN_DEFS.filter(col => !(isClient && CLIENT_HIDDEN_COLS.includes(col.key))).map(col => (
                   <label key={col.key} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
                     <input
                       type="checkbox"
@@ -1109,7 +1157,9 @@ export default function AdminOrders() {
                     </span>
                   </th>
                 ))}
-                <th className="px-3 py-3 text-center font-semibold" style={{ minWidth: 140 }}>{t("actions")}</th>
+                {!isClient && (
+                  <th className="px-3 py-3 text-center font-semibold" style={{ minWidth: 140 }}>{t("actions")}</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -1140,6 +1190,7 @@ export default function AdminOrders() {
                           </td>
                         );
                       })}
+                      {!isClient && (
                       <td className="px-3 py-3 text-center align-middle">
                         <div className="flex items-center justify-center gap-1">
                           <button
@@ -1166,6 +1217,7 @@ export default function AdminOrders() {
                           </button>
                         </div>
                       </td>
+                      )}
                     </tr>
                     {expanded && group.rows.map((order, cIdx) =>
                       renderDataRow(order, displayIndex, {
@@ -1177,7 +1229,7 @@ export default function AdminOrders() {
                 );
               })}
               {groupedOrders.length === 0 && (
-                <tr><td colSpan={visibleCols.length + 1} className="px-5 py-12 text-center text-slate-400">
+                <tr><td colSpan={visibleCols.length + (isClient ? 0 : 1)} className="px-5 py-12 text-center text-slate-400">
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>

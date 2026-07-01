@@ -32,7 +32,7 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
   // Admin items — visible to both agency admins AND client admins.
   const adminNavItems = [];
   if (canSeeUsers) adminNavItems.push({ label: t('userManagement'), icon: "manage_accounts", path: "/admin/users" });
-  if (canSeeAccessRequests) adminNavItems.push({ label: t('accessRequests'), icon: "lock_open", path: "/admin/access-requests" });
+  if (canSeeAccessRequests) adminNavItems.push({ label: t('claimOrders'), icon: "how_to_reg", path: "/admin/claim-orders" });
 
   const handleLogout = async () => {
     try {
@@ -55,11 +55,14 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
 
       {/* Sidebar */}
       <aside
-        className={`w-64 flex-shrink-0 flex flex-col justify-between bg-sidebar-dark text-sidebar-text border-r border-neutral-800 transition-all duration-300 z-20 ${
+        className={`w-64 flex-shrink-0 flex flex-col h-screen bg-sidebar-dark text-sidebar-text border-r border-neutral-800 transition-all duration-300 z-20 ${
           mobileMenuOpen ? "fixed inset-y-0 left-0" : "hidden"
         } md:flex md:relative`}
       >
-        <div>
+        {/* Scrollable region: logo + nav. min-h-0 lets it shrink so the
+            bottom section stays visible and this area scrolls instead of
+            pushing the logout button off-screen. */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {/* Logo Area */}
           <div className="h-20 flex items-center px-6 border-b border-neutral-800 gap-3">
             {/* Logo links to /admin/dashboard so navigating from inside the
@@ -166,8 +169,9 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
           </nav>
         </div>
 
-        {/* Bottom Section: Language Toggle + User + Logout */}
-        <div className="p-4 border-t border-neutral-800 space-y-2">
+        {/* Bottom Section: Language Toggle + User + Logout.
+            flex-shrink-0 pins it so it never gets squeezed/pushed off-screen. */}
+        <div className="flex-shrink-0 p-4 border-t border-neutral-800 space-y-2">
           {/* Language Toggle */}
           <button
             onClick={toggleLanguage}

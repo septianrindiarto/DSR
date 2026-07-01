@@ -12,6 +12,7 @@ const CAR_CATEGORIES = [
   { value: "MPV",      label: "MPV",      hint: "Contoh: Avanza, Xenia" },
   { value: "SUV",      label: "SUV",      hint: "Contoh: Innova, Fortuner" },
   { value: "City Car", label: "City Car", hint: "Contoh: Brio, Agya" },
+  { value: "LCV",      label: "LCV",      hint: "Contoh: Hiace, Elf" },
   { value: "Pickup",   label: "Pickup",   hint: "Muatan kurang dari 1.5 Ton" },
   { value: "CDE",      label: "CDE",      hint: "Engkel, 2 sampai 3 Ton" },
   { value: "Lainnya",  label: "Lainnya",  hint: "Isi keterangan di kolom detail" },
@@ -73,6 +74,20 @@ export default function LandingBookingForm() {
     0,
   );
 
+  // Submit stays locked until every mandatory field is valid: name, whatsapp,
+  // both dates, and each vehicle row has a category (+ a note when "Lainnya").
+  // Company name is optional (blank = private booking).
+  const canSubmit = useMemo(() => {
+    if (!form.fullName.trim()) return false;
+    if (!form.whatsapp.trim()) return false;
+    if (!form.pickupDate || !form.returnDate) return false;
+    if (form.vehicles.length === 0) return false;
+    return form.vehicles.every(
+      v => v.carCategory && v.package && v.package.trim() &&
+        (v.carCategory !== "Lainnya" || v.carCategoryNote.trim()),
+    );
+  }, [form]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setInfo(""); setError("");
@@ -89,6 +104,10 @@ export default function LandingBookingForm() {
       }
       if (v.carCategory === "Lainnya" && !v.carCategoryNote.trim()) {
         setError(`Kendaraan baris ${i + 1}: isi keterangan untuk kategori Lainnya.`);
+        return;
+      }
+      if (!v.package || !v.package.trim()) {
+        setError(`Kendaraan baris ${i + 1}: pilih paket.`);
         return;
       }
       const qty = Math.max(1, Math.min(10, Number(v.quantity) || 1));
@@ -114,6 +133,10 @@ export default function LandingBookingForm() {
     setSubmitting(true);
     try {
       const isCompany = !!form.companyName.trim();
+      // Affiliate routing — /?ref=<agent code> ties this order to that agent's agency.
+      const affiliateRef = typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("ref")
+        : null;
       const payload = {
         fullName: form.fullName.trim(),
         whatsapp: form.whatsapp.trim(),
@@ -122,6 +145,7 @@ export default function LandingBookingForm() {
         pickupDate: form.pickupDate,
         returnDate: form.returnDate,
         notes: form.notes || null,
+        affiliateCode: affiliateRef || null,
         vehicles: validVehicles,
       };
       const result = await api.orders.createPublic(payload);
@@ -163,7 +187,7 @@ export default function LandingBookingForm() {
           className="bg-white rounded-2xl border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.04)] p-6 md:p-8"
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-            <LField label="Nama">
+            <LField label="Nama *">
               <input
                 type="text"
                 value={form.fullName}
@@ -174,7 +198,7 @@ export default function LandingBookingForm() {
               />
             </LField>
 
-            <LField label="No. WhatsApp" hint="Wajib, admin akan kirim konfirmasi ke nomor ini">
+            <LField label="No. WhatsApp *" hint="Admin akan kirim konfirmasi ke nomor ini">
               <input
                 type="tel"
                 value={form.whatsapp}
@@ -202,7 +226,7 @@ export default function LandingBookingForm() {
 
           {/* Dates inline */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5 mt-5">
-            <LField label="Tgl Pemakaian">
+            <LField label="Tgl Pemakaian *">
               <input
                 type="date"
                 value={form.pickupDate}
@@ -212,7 +236,7 @@ export default function LandingBookingForm() {
               />
             </LField>
 
-            <LField label="Tgl Selesai">
+            <LField label="Tgl Selesai *">
               <input
                 type="date"
                 value={form.returnDate}
@@ -293,8 +317,9 @@ export default function LandingBookingForm() {
             </p>
             <button
               type="submit"
-              disabled={submitting}
-              className="inline-flex items-center justify-center gap-2 h-12 px-7 rounded-lg bg-primary hover:bg-primary-dark text-white font-bold tracking-wide transition-colors shadow-lg shadow-primary/25 disabled:opacity-60 uppercase text-sm"
+              disabled={submitting || !canSubmit}
+              title={!canSubmit ? "Lengkapi semua kolom wajib terlebih dahulu" : undefined}
+              className="inline-flex items-center justify-center gap-2 h-12 px-7 rounded-lg bg-primary hover:bg-primary-dark text-white font-bold tracking-wide transition-colors shadow-lg shadow-primary/25 disabled:opacity-60 disabled:cursor-not-allowed uppercase text-sm"
             >
               {submitting && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               <span className="material-symbols-outlined text-[20px]">send</span>
@@ -351,7 +376,7 @@ function LandingVehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
         <div className="md:col-span-6">
-          <LField label="Kategori" hint={selectedCategory?.hint || "Pilih jenis kendaraan"}>
+          <LField label="Kategori *" hint={selectedCategory?.hint || "Pilih jenis kendaraan"}>
             <select
               value={vehicle.carCategory}
               onChange={e => onChange("carCategory", e.target.value)}
@@ -367,7 +392,7 @@ function LandingVehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
         </div>
 
         <div className="md:col-span-2">
-          <LField label="Jumlah" hint="1-10">
+          <LField label="Jumlah *" hint="1-10">
             <input
               type="number"
               min={1}
@@ -381,12 +406,13 @@ function LandingVehicleRow({ index, vehicle, canRemove, onChange, onRemove }) {
         </div>
 
         <div className="md:col-span-4">
-          <LField label="Paket" hint="Opsional">
+          <LField label="Paket *">
             <input
               list={`landing-paket-${index}`}
               value={vehicle.package}
               onChange={e => onChange("package", e.target.value)}
               className="light-input"
+              required
               placeholder="All In / Mobil dan Driver"
             />
             <datalist id={`landing-paket-${index}`}>

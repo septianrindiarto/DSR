@@ -18,6 +18,7 @@ import AdminDocuments from "./pages/AdminDocuments";
 import AdminSettings from "./pages/AdminSettings";
 import AdminUsers from "./pages/AdminUsers";
 import AdminAccessRequests from "./pages/AdminAccessRequests";
+import AdminClaimOrders from "./pages/AdminClaimOrders";
 import VerifyEmail from "./pages/VerifyEmail";
 import CarDetail from "./pages/CarDetail";
 import NotFound from "./pages/NotFound";
@@ -118,6 +119,7 @@ function App() {
             <Route path="/admin/settings" element={<Guarded feature={FEATURES.SETTINGS}><AdminSettings /></Guarded>} />
             <Route path="/admin/users" element={<Guarded feature={FEATURES.USERS}><AdminUsers /></Guarded>} />
             <Route path="/admin/access-requests" element={<Guarded feature={FEATURES.USERS}><AdminAccessRequests /></Guarded>} />
+            <Route path="/admin/claim-orders" element={<Guarded feature={FEATURES.ACCESS_REQUESTS}><AdminClaimOrders /></Guarded>} />
             <Route path="/car/:id" element={<CarDetail />} />
             {/* Audit C-02: catch-all 404. Must remain LAST so it does not
                 shadow the routes above. */}

@@ -1,0 +1,298 @@
+%% DSR Solution — full database ER wireframe (all tables + fields)
+%% Generated from apps/api/src/db/schema.js. Cardinality: ||--o{ = one-to-many.
+%% PK = primary key, FK = foreign key, UK = unique. Some FKs are "logical"
+%% (relationship exists, but no DB-level constraint) — noted in the label.
+erDiagram
+
+    %% ─────────── Auth (Better Auth) ───────────
+    user {
+        text id PK
+        text name
+        text email UK
+        boolean email_verified
+        enum role "admin|superadmin|agent|demo|client|client_admin"
+        varchar account_type "agency|client"
+        int organization_id FK
+        boolean is_active
+        boolean is_demo
+        jsonb permissions
+        varchar affiliate_code "Stage2 /?ref="
+        timestamp created_at
+    }
+    session {
+        text id PK
+        text token UK
+        text user_id FK
+        timestamp expires_at
+        text ip_address
+        text user_agent
+    }
+    account {
+        text id PK
+        text user_id FK
+        text account_id
+        text provider_id
+        text password "hashed"
+        text access_token
+    }
+    verification {
+        text id PK
+        text identifier
+        text value
+        timestamp expires_at
+    }
+
+    %% ─────────── Tenancy ───────────
+    organizations {
+        serial id PK
+        varchar name UK
+        text name_normalized
+        varchar slug UK
+        boolean is_active
+        text admin_user_id FK "logical -> user"
+        varchar invite_code "team join"
+        varchar agency_code "Stage2 client link"
+        int parent_agency_id FK "logical -> organizations (self)"
+        varchar display_id
+        text address
+        varchar phone1
+        varchar phone2
+        varchar email
+        varchar signatory
+        varchar npwp
+    }
+    client_agency_links {
+        serial id PK
+        int client_org_id FK "-> organizations"
+        int agency_org_id FK "-> organizations"
+        varchar status "active|pending|archived"
+        varchar approval_token
+        text created_by "logical -> user"
+    }
+
+    %% ─────────── Fleet ───────────
+    cars {
+        serial id PK
+        varchar name
+        varchar brand
+        enum type "MPV|SUV|Sedan|City Car|Sport"
+        enum category "economy|standard|premium|luxury"
+        int year
+        varchar license_plate
+        decimal price
+        decimal max_price
+        int capacity
+        enum transmission
+        enum fuel
+        enum status "available|rented|maintenance"
+        int available_count
+        boolean is_demo
+        int organization_id FK
+        text created_by FK
+    }
+    drivers {
+        serial id PK
+        varchar name
+        varchar phone
+        varchar license_number
+        timestamp license_expiry
+        enum status "active|inactive|suspended"
+        text address
+        boolean is_demo
+        int organization_id FK
+        text created_by FK
+    }
+    maintenance {
+        serial id PK
+        int car_id FK
+        enum type "routine|repair|inspection"
+        timestamp scheduled_date
+        timestamp completed_date
+        decimal cost
+        enum status "scheduled|in_progress|completed"
+        int organization_id FK
+        text created_by FK
+    }
+
+    %% ─────────── CRM ───────────
+    customers {
+        serial id PK
+        text user_id FK "owner (self-booking)"
+        varchar name
+        varchar company_name
+        varchar email UK
+        varchar phone "MATCH KEY for findOrCreate"
+        varchar whatsapp "MATCH KEY for findOrCreate"
+        enum customer_type "private|company"
+        varchar job
+        text address
+        enum status "active|vip|inactive|pending"
+        int total_orders
+        timestamp last_order_date
+        int organization_id FK
+        text created_by FK
+    }
+    companies {
+        serial id PK
+        varchar name UK
+        text address
+        varchar phone
+        varchar email
+        int organization_id FK
+        text created_by FK
+    }
+
+    %% ─────────── Orders (Rekap) ───────────
+    orders {
+        serial id PK
+        varchar order_number "BOOKING code, shared by N cars"
+        int car_id FK
+        int customer_id FK "NOT NULL - name/company sourced here"
+        int driver_id FK
+        timestamp pickup_date
+        timestamp return_date
+        text pickup_location
+        varchar destination
+        int total_days
+        decimal daily_rate
+        decimal total_price
+        varchar package
+        int overnight_nights
+        decimal overtime_hours
+        decimal bailout
+        enum status "pending|confirmed|active|completed|cancelled"
+        boolean whatsapp_sent
+        text approved_by FK
+        varchar invoice_number
+        varchar invoice_letter_number
+        varchar invoice_payment_status
+        text claimed_by_user_id FK "logical -> user"
+        int claimed_by_agency_id FK "logical -> organizations"
+        varchar claim_status "unclaimed|client_claimed|agency_claimed"
+        varchar source_origin "web|rekap_xlsx"
+        boolean is_demo
+        int organization_id FK
+        text created_by FK
+    }
+    reviews {
+        serial id PK
+        int customer_id FK
+        int order_id FK
+        int rating
+        text comment
+        int organization_id FK
+        text created_by FK
+    }
+
+    %% ─────────── Finance ───────────
+    financial_reports {
+        serial id PK
+        varchar name
+        enum category "keuangan_inti|perpajakan|aset_armada|kepatuhan|operasional|payroll"
+        varchar period
+        enum status "draft|submitted|final|archived"
+        text file_url
+        text created_by FK
+    }
+    journal_entries {
+        serial id PK
+        timestamp entry_date
+        varchar description
+        varchar category
+        decimal debit
+        decimal credit
+        varchar journal_ref
+        boolean is_reversal
+        int reversal_of FK "-> journal_entries (self)"
+        int organization_id FK
+        text created_by FK
+    }
+    chart_of_accounts {
+        serial id PK
+        varchar code UK
+        varchar name
+        varchar type "asset|liability|equity|income|expense"
+        varchar normal_balance "debit|credit"
+        boolean is_active
+        int organization_id FK
+        text created_by FK
+    }
+    locked_periods {
+        serial id PK
+        int year
+        int month "NULL = whole year"
+        text locked_by FK
+    }
+
+    %% ─────────── System / Audit ───────────
+    activity_logs {
+        serial id PK
+        text user_id FK
+        enum action "create|update|delete|login|logout|approve|reject|confirm"
+        varchar entity
+        varchar entity_id
+        json details
+    }
+    dashboard_prefs {
+        serial id PK
+        text user_id FK "UNIQUE (1:1)"
+        json widget_config
+    }
+    access_requests {
+        serial id PK
+        text user_id FK
+        varchar feature_key
+        enum status "pending|approved|rejected"
+        text decided_by FK
+    }
+    sync_logs {
+        serial id PK
+        varchar source "rekap_xlsx|gdrive"
+        varchar trigger "manual|scheduled|upload"
+        varchar status "success|partial|failed"
+        int rows_read
+        int orders_inserted
+        text triggered_by FK
+    }
+
+    %% ─────────── Relationships ───────────
+    organizations ||--o{ organizations : "parent_agency (self)"
+    organizations ||--o{ user : "belongs to"
+    organizations ||--o{ cars : "owns"
+    organizations ||--o{ drivers : "owns"
+    organizations ||--o{ customers : "owns"
+    organizations ||--o{ companies : "owns"
+    organizations ||--o{ orders : "scopes"
+    organizations ||--o{ orders : "claimed_by_agency"
+    organizations ||--o{ maintenance : "owns"
+    organizations ||--o{ reviews : "owns"
+    organizations ||--o{ journal_entries : "owns"
+    organizations ||--o{ chart_of_accounts : "owns"
+    organizations ||--o{ client_agency_links : "as client"
+    organizations ||--o{ client_agency_links : "as agency"
+
+    user ||--o{ session : "has"
+    user ||--o{ account : "has"
+    user ||--o| dashboard_prefs : "has (1:1)"
+    user ||--o{ customers : "owns / created"
+    user ||--o{ orders : "created / approved / claimed"
+    user ||--o{ cars : "created"
+    user ||--o{ drivers : "created"
+    user ||--o{ companies : "created"
+    user ||--o{ maintenance : "created"
+    user ||--o{ reviews : "created"
+    user ||--o{ activity_logs : "acts"
+    user ||--o{ access_requests : "requests / decides"
+    user ||--o{ sync_logs : "triggers"
+    user ||--o{ financial_reports : "created"
+    user ||--o{ journal_entries : "created"
+    user ||--o{ chart_of_accounts : "created"
+    user ||--o{ locked_periods : "locks"
+
+    customers ||--o{ orders : "places (customer_id)"
+    customers ||--o{ reviews : "writes"
+    cars ||--o{ orders : "booked in"
+    cars ||--o{ maintenance : "serviced"
+    drivers ||--o{ orders : "assigned"
+    orders ||--o{ reviews : "reviewed"
+    journal_entries ||--o{ journal_entries : "reverses (self)"

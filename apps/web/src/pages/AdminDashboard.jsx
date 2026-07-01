@@ -66,13 +66,8 @@ export default function AdminDashboard() {
             {t('dashboardSubtitle')}
           </p>
         </div>
-        <button
-          onClick={() => setShowWidgetModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 text-sm font-medium transition-colors cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[18px]">tune</span>
-          {t("customizeWidgets")}
-        </button>
+        {/* Customize Widgets button hidden until Stage 3 (widgets are being
+            reworked). Modal plumbing below is kept intact for re-enable. */}
       </div>
 
       {/* Primary action — booking form. This replaced the old "Tambah Rekap"
@@ -80,16 +75,7 @@ export default function AdminDashboard() {
           and center on the Dashboard for both client admins and client users. */}
       <DashboardBookingForm />
 
-      {/* Empty state — placeholder for future widgets */}
-      <div className="bg-white rounded-xl border border-dashed border-slate-300 shadow-sm py-12 px-6 text-center">
-        <span className="material-symbols-outlined text-[40px] text-slate-300 mb-2 block">
-          dashboard_customize
-        </span>
-        <h2 className="text-base font-bold text-slate-700">{t('widgetsComingSoon')}</h2>
-        <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">
-          {t('widgetsComingSoonDesc').replace('{btn}', t('customizeWidgets'))}
-        </p>
-      </div>
+      {/* Empty-state widget placeholder hidden until Stage 3. */}
 
       {/* Widget Customization Modal — kept intact */}
       {showWidgetModal && (

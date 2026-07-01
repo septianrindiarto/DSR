@@ -46,8 +46,24 @@ test('Telegram: multi-car message lists every car + grand total', () => {
     const msg = buildOrderMessage({ order: rows[0], orders: rows, customer, source: 'dashboard' });
     assert.ok(msg.includes('(3 kendaraan)'), 'header shows car count');
     assert.ok(msg.includes('Avanza') && msg.includes('Innova') && msg.includes('Xenia'), 'lists all 3 cars');
-    // grand total = 1.245.000 + 1.500.000 + 900.000 = 3.645.000 (id-ID formatting)
-    assert.ok(msg.includes('3.645.000'), 'shows summed grand total');
+    // Prices were removed from the alert per product request.
+    assert.ok(!msg.includes('Rp'), 'no price/total shown in the notification');
+});
+
+test('Telegram: request view groups as "N unit Category" with jemput/tujuan', () => {
+    const rows = [
+        baseOrder({ id: 1 }), baseOrder({ id: 2 }), baseOrder({ id: 3 }),
+    ];
+    const requestVehicles = [
+        { carCategoryRequested: 'MPV', quantity: 2, pickupLocation: 'Bandung', destination: 'Jakarta' },
+        { carCategoryRequested: 'SUV', quantity: 1, pickupLocation: 'Bandung', destination: 'Bogor' },
+    ];
+    const msg = buildOrderMessage({ order: rows[0], orders: rows, customer, source: 'landing', requestVehicles });
+    assert.ok(msg.includes('(3 kendaraan)'), 'header counts total units');
+    assert.ok(msg.includes('1. 2 unit MPV'), 'groups MPV as 2 units');
+    assert.ok(msg.includes('2. 1 unit SUV'), 'groups SUV as 1 unit');
+    assert.ok(msg.includes('jemput di Bandung tujuan Jakarta'), 'per-vehicle pickup/destination');
+    assert.ok(!msg.includes('Rp'), 'no price shown');
 });
 
 test('Telegram: empty order set yields null (caller treats as no-op)', () => {

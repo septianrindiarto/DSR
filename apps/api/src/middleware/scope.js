@@ -39,7 +39,7 @@ import { eq, or, isNull, sql } from 'drizzle-orm';
  * @param {{ organizationId, isDemo, createdBy, ownerUserId }} cols - Drizzle column refs
  * @returns {import('drizzle-orm').SQL[]}
  */
-export function buildScopeConditions(user, { organizationId, isDemo, createdBy, ownerUserId }) {
+export function buildScopeConditions(user, { organizationId, isDemo, createdBy, ownerUserId, claimedByAgencyId }) {
     if (!user) return [];
 
     if (user.role === 'superadmin') return [];
@@ -57,6 +57,19 @@ export function buildScopeConditions(user, { organizationId, isDemo, createdBy, 
     if (isClientAccount) {
         if (user.permissions && user.permissions.view_all_orders === true) {
             return [];
+        }
+
+        // For ORDER queries (claimedByAgencyId provided, i.e. Rekap Order),
+        // a client sees ONLY the orders they submitted themselves — matched by
+        // orders.created_by = me, or the customer they own. NEVER company-wide,
+        // so orders an agency booked for the company don't leak into the
+        // client's Rekap. (Klaim Order is unaffected — it doesn't pass this.)
+        if (claimedByAgencyId) {
+            const own = [];
+            if (createdBy) own.push(eq(createdBy, user.id));
+            if (ownerUserId) own.push(eq(ownerUserId, user.id));
+            if (own.length === 0) return [sql`false`];
+            return [own.length === 1 ? own[0] : or(...own)];
         }
 
         // Treat legacy strings as their canonical equivalents.
@@ -90,12 +103,26 @@ export function buildScopeConditions(user, { organizationId, isDemo, createdBy, 
     const orgId = user.organizationId;
     if (!orgId) return [sql`false`];
 
-    // "My client orgs" — every organization whose parent_agency_id points
-    // at this agency. Today this is the single-agency model; when the
-    // m2m vendor table ships, swap this subquery for a join. Written as
-    // a raw SQL fragment so we can keep buildScopeConditions synchronous
-    // and avoid touching every route that calls it.
-    const clientOrgsSubquery = sql`(SELECT id FROM organizations WHERE parent_agency_id = ${orgId})`;
+    // ORDER queries pass `claimedByAgencyId`. For ORDERS, an agency's Rekap
+    // shows ONLY what it OWNS: its own org's orders plus orders claimed /
+    // auto-claimed to it. Unclaimed orders live in Klaim Order, never Rekap —
+    // so we deliberately do NOT include linked-client orgs or null-org orders
+    // here (those surface through findClaimable instead).
+    if (claimedByAgencyId) {
+        const conds = [or(eq(organizationId, orgId), eq(claimedByAgencyId, orgId))];
+        if (isDemo) conds.push(eq(isDemo, false));
+        return conds;
+    }
+
+    // Non-order entities (customers, cars, drivers…): relationship-based —
+    // the agency's own rows + rows tagged to a linked client org. Spans BOTH
+    // the legacy single-agency link (parent_agency_id) AND the Stage 2
+    // many-to-many client_agency_links table.
+    const clientOrgsSubquery = sql`(
+        SELECT id FROM organizations WHERE parent_agency_id = ${orgId}
+        UNION
+        SELECT client_org_id FROM client_agency_links WHERE agency_org_id = ${orgId} AND status = 'active'
+    )`;
 
     if (user.role === 'admin') {
         const conds = [or(

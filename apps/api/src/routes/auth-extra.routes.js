@@ -24,6 +24,7 @@ import { validate } from '../middleware/validate.js';
 import { generateUniqueInviteCode, normalizeCompanyName } from '../services/invite-code.service.js';
 import { findAvailableDisplayId } from '../services/display-id.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
+import { relationshipService } from '../services/relationship.service.js';
 
 // Phase 4C-1 — for now, every new client org is owned by DSR (org id 1).
 // When multi-agency support ships, this becomes a per-request decision based
@@ -41,6 +42,7 @@ const registerSchema = z.object({
     companyName: z.string().max(255).optional().nullable(),
     inviteCode: z.string().max(20).optional().nullable(),
     accountType: z.enum(['client', 'agency']).default('client'),
+    agencyCode: z.string().max(20).optional().nullable(), // Stage 2 — link client to an agency at signup
 }).refine(
     (data) => {
         // Company customers need EITHER an invite code OR a company name.
@@ -55,8 +57,15 @@ const registerSchema = z.object({
 router.post('/register-extended', validate(registerSchema), async (req, res, next) => {
     const {
         name, email, password, phone,
-        customerType, companyName, inviteCode, accountType,
+        customerType, companyName, inviteCode, accountType, agencyCode,
     } = req.body;
+
+    // Track everything we create so the catch can roll it ALL back if any
+    // later step fails — a partial registration must leave nothing behind
+    // (otherwise the org name / account persists and blocks re-registration).
+    let newUserId = null;
+    let createdOrgId = null;
+    let createdCustomerId = null;
 
     try {
         // 1. Create the user via Better Auth (handles password hash + sends
@@ -73,7 +82,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
         // email, which is the unique identifier we just registered with.
         // Without this fallback the post-signup UPDATE matches zero rows
         // and the new user is left with default role and NULL organization_id.
-        let newUserId = result?.user?.id || result?.data?.user?.id || result?.id || null;
+        newUserId = result?.user?.id || result?.data?.user?.id || result?.id || null;
         if (!newUserId) {
             const [byEmail] = await db.select({ id: userTable.id })
                 .from(userTable)
@@ -96,9 +105,42 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
         let createdOrgInviteCode = null;          // truthy only if we made a new org
 
         if (accountType === 'agency') {
-            // DSR internal staff signup — keep prior behaviour.
+            // Agency signup → create the agency's OWN organization. An agency is
+            // a top-level vendor, identified by parent_agency_id IS NULL. Without
+            // this the agency admin has organization_id = NULL and the order/user
+            // scope (which keys off their org id) returns nothing. The agency
+            // name comes from `name` (the "Nama Perusahaan" field) since the
+            // agency form no longer sends a separate companyName.
             finalRole = 'admin';
             finalAccountType = 'agency';
+            const agencyName = (companyName?.trim() || name?.trim() || '');
+            const normalized = normalizeCompanyName(agencyName);
+            const [dup] = await db.select({ id: organizations.id, name: organizations.name })
+                .from(organizations)
+                .where(or(
+                    eq(organizations.nameNormalized, normalized),
+                    sql`LOWER(TRIM(${organizations.name})) = ${normalized}`,
+                ))
+                .limit(1);
+            if (dup) {
+                return res.status(409).json({
+                    error: `Nama "${dup.name}" sudah terdaftar. Gunakan nama agency lain.`,
+                });
+            }
+            const { displayId } = await findAvailableDisplayId(agencyName, new Date());
+            const code = await generateUniqueInviteCode();
+            const [orgRow] = await db.insert(organizations).values({
+                name: agencyName,
+                nameNormalized: normalized,
+                isActive: true,
+                adminUserId: newUserId,
+                inviteCode: code,
+                displayId,
+                parentAgencyId: null, // top-level agency
+            }).returning({ id: organizations.id });
+            finalOrgId = orgRow.id;
+            createdOrgId = orgRow.id; // for rollback on later failure
+            createdOrgInviteCode = code;
         } else if (inviteCode && inviteCode.trim()) {
             // Client joining an existing org via invite code.
             const code = inviteCode.trim().toUpperCase();
@@ -154,6 +196,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                 parentAgencyId: DEFAULT_AGENCY_ID,
             }).returning({ id: organizations.id });
             finalOrgId = orgRow.id;
+            createdOrgId = orgRow.id; // for rollback on later failure
             finalRole = 'admin';
             finalAccountType = 'client';
             createdOrgInviteCode = code;
@@ -197,6 +240,17 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
             console.log('[register-extended] persisted user row:', updated[0]);
         }
 
+        // 3b. Stage 2 — if the client supplied an Agency Code at signup, link
+        // their company org to that agency (active). Only meaningful for company
+        // clients (private clients have no org; affiliate links route them).
+        if (finalAccountType === 'client' && finalOrgId && agencyCode && agencyCode.trim()) {
+            try {
+                await relationshipService.addAgencyByCode(finalOrgId, agencyCode, newUserId);
+            } catch (linkErr) {
+                console.warn('[register-extended] agency-code link failed:', linkErr?.message);
+            }
+        }
+
         // 4. Find-or-link the customer record (unchanged from Phase 2.5 —
         //    customers.email is unique, so reuse if it already exists).
         let customerId = null;
@@ -229,6 +283,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                     companyName: customerType === 'company' ? (companyName || null) : null,
                 }).returning({ id: customers.id });
                 customerId = row?.id || null;
+                createdCustomerId = customerId; // for rollback (only when newly inserted)
             }
         } catch (custErr) {
             console.error('[register-extended] customer link/create failed:', custErr.message);
@@ -239,7 +294,9 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
             sendInviteCodeEmail({
                 to: email,
                 adminName: name,
-                companyName: companyName.trim(),
+                // Agency signups send `name` (Nama Perusahaan) but no separate
+                // companyName, so fall back to name to avoid a null .trim().
+                companyName: (companyName?.trim() || name || '').trim(),
                 inviteCode: createdOrgInviteCode,
             }).catch(() => { /* logged inside */ });
         }
@@ -261,6 +318,24 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
         });
     } catch (err) {
         console.error('[register-extended] failed:', err.message, err.body || '');
+
+        // Compensating rollback — undo every row we created in this request so
+        // a failed signup leaves the DB exactly as it was. Order matters:
+        // customer → org → user (user delete cascades to account/session).
+        // Each guarded independently so one cleanup failure can't mask another.
+        if (createdCustomerId) {
+            await db.delete(customers).where(eq(customers.id, createdCustomerId))
+                .catch((e) => console.warn('[register-extended] customer rollback failed:', e?.message));
+        }
+        if (createdOrgId) {
+            await db.delete(organizations).where(eq(organizations.id, createdOrgId))
+                .catch((e) => console.warn('[register-extended] org rollback failed:', e?.message));
+        }
+        if (newUserId) {
+            await db.delete(userTable).where(eq(userTable.id, newUserId))
+                .catch((e) => console.warn('[register-extended] user rollback failed:', e?.message));
+        }
+
         const raw = err?.body?.message || err?.message || 'Pendaftaran gagal.';
         const lower = raw.toLowerCase();
         if (

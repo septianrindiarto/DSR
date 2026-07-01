@@ -52,6 +52,9 @@ export const organizations = pgTable('organizations', {
     // links a client org to its owning agency (NULL for agency orgs themselves).
     displayId: varchar('display_id', { length: 20 }),
     parentAgencyId: integer('parent_agency_id'),
+    // Stage 2 — per-agency join code; clients enter it (registration / Pengaturan)
+    // to link to this agency.
+    agencyCode: varchar('agency_code', { length: 20 }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -80,6 +83,9 @@ export const user = pgTable('user', {
     // (drizzle/client_scope_migration.sql) enforces NOT NULL DEFAULT '{}'::jsonb,
     // which fills in '{}' automatically.
     permissions: jsonb('permissions').default({}),
+    // Stage 2 — per-agent affiliate code; public /?ref=<code> ties a private
+    // order to this agent's agency.
+    affiliateCode: varchar('affiliate_code', { length: 20 }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
@@ -223,6 +229,10 @@ export const orders = pgTable('orders', {
     orderNumber: varchar('order_number', { length: 20 }).notNull(),
     carId: integer('car_id').references(() => cars.id, { onDelete: 'set null' }),
     customerId: integer('customer_id').references(() => customers.id).notNull(),
+    // Snapshot of the exact "Nama" typed in the booking/Rekap form. The order
+    // is the storehouse for the form; this preserves the entered name verbatim
+    // regardless of how customer_id is deduped. Display prefers this column.
+    customerName: varchar('customer_name', { length: 255 }),
     driverId: integer('driver_id').references(() => drivers.id),
     pickupDate: timestamp('pickup_date').notNull(),
     returnDate: timestamp('return_date').notNull(),
@@ -249,6 +259,10 @@ export const orders = pgTable('orders', {
     invoiceDueDate: timestamp('invoice_due_date'),                  // Due Date
     invoicePaidDate: timestamp('invoice_paid_date'),                // Tanggal Realisasi
     invoicePaymentStatus: varchar('invoice_payment_status', { length: 20 }), // Pending / Paid
+    // Stage 2 — order claim model. claim_status: unclaimed | client_claimed | agency_claimed
+    claimedByUserId: text('claimed_by_user_id'),
+    claimedByAgencyId: integer('claimed_by_agency_id'),
+    claimStatus: varchar('claim_status', { length: 20 }).default('unclaimed'),
     // Origin tracking — distinguishes web-created orders from Excel-synced ones
     sourceOrigin: varchar('source_origin', { length: 20 }).default('web'), // 'web' | 'rekap_xlsx'
     isDemo: boolean('is_demo').notNull().default(false),
@@ -256,6 +270,19 @@ export const orders = pgTable('orders', {
     createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// ─── Client ↔ Agency links (Stage 2, many-to-many) ──────────────────
+// A client company can be served by several agencies and vice-versa.
+// status: active | pending (awaiting client approval) | archived.
+export const clientAgencyLinks = pgTable('client_agency_links', {
+    id: serial('id').primaryKey(),
+    clientOrgId: integer('client_org_id').notNull(),
+    agencyOrgId: integer('agency_org_id').notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('active'),
+    approvalToken: varchar('approval_token', { length: 64 }), // set when status='pending'
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    createdBy: text('created_by'),
 });
 
 // ─── Rekap Sync Logs ────────────────────────────────────────────────

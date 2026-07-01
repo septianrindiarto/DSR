@@ -1,6 +1,6 @@
 import { db } from '../db/index.js';
-import { orders, cars, customers, drivers } from '../db/schema.js';
-import { eq, ilike, or, and, asc, desc, sql, gte, lte, like } from 'drizzle-orm';
+import { orders, cars, customers, drivers, clientAgencyLinks } from '../db/schema.js';
+import { eq, ilike, or, and, asc, desc, sql, gte, lte, like, isNull, inArray } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 
 /**
@@ -105,6 +105,7 @@ export const orderService = {
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
             ownerUserId: customers.userId,
+            claimedByAgencyId: orders.claimedByAgencyId,
         });
         conditions.push(...scopeConds);
 
@@ -195,6 +196,7 @@ export const orderService = {
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
             ownerUserId: customers.userId,
+            claimedByAgencyId: orders.claimedByAgencyId,
         });
 
         let query = db
@@ -419,6 +421,203 @@ export const orderService = {
         return existing;
     },
 
+    // Stage 2 — claim an entire booking (all rows sharing the code). Gated to
+    // admin+ at the route. An agency claimer takes fulfilment responsibility
+    // (and, per §10 scenario 2, becomes that client's agency); a client-admin
+    // claimer links the booking to their company.
+    async claimByOrderNumber(orderNumber, user) {
+        if (!orderNumber || !user) return [];
+        const isAgency = user.accountType === 'agency';
+        const patch = { claimedByUserId: user.id, updatedAt: new Date() };
+        if (isAgency) {
+            patch.claimedByAgencyId = user.organizationId || null;
+            patch.claimStatus = 'agency_claimed';
+        } else {
+            if (user.organizationId) patch.organizationId = user.organizationId;
+            patch.claimStatus = 'client_claimed';
+        }
+        const updated = await db.update(orders)
+            .set(patch)
+            .where(eq(orders.orderNumber, orderNumber))
+            .returning();
+
+        // §10 scenario 2: an agency claiming a company order becomes that
+        // client's agency (create the link if missing).
+        if (isAgency && user.organizationId) {
+            const clientOrgIds = [...new Set(
+                updated.map(o => o.organizationId).filter(Boolean).filter(id => id !== user.organizationId)
+            )];
+            for (const clientOrgId of clientOrgIds) {
+                await db.insert(clientAgencyLinks)
+                    .values({ clientOrgId, agencyOrgId: user.organizationId, status: 'active', createdBy: user.id })
+                    .onConflictDoNothing();
+            }
+        }
+        return updated;
+    },
+
+    // Stage 2 — claim SEVERAL bookings at once (bulk claim from Klaim Order).
+    // SET-BASED for speed: one UPDATE for every selected code and one INSERT
+    // for all the agency↔client links. (The earlier per-code loop did 1+ DB
+    // round-trips per booking — against Neon that's hundreds of network hops
+    // and times out for large selections.)
+    async claimManyByOrderNumber(orderNumbers, user) {
+        const codes = [...new Set((Array.isArray(orderNumbers) ? orderNumbers : [])
+            .map((c) => String(c || '').trim()).filter(Boolean))];
+        if (codes.length === 0 || !user) return { bookings: 0, vehicles: 0, results: [] };
+
+        const isAgency = user.accountType === 'agency';
+        const patch = { claimedByUserId: user.id, updatedAt: new Date() };
+        if (isAgency) {
+            patch.claimedByAgencyId = user.organizationId || null;
+            patch.claimStatus = 'agency_claimed';
+        } else {
+            if (user.organizationId) patch.organizationId = user.organizationId;
+            patch.claimStatus = 'client_claimed';
+        }
+
+        // ① one UPDATE for ALL selected bookings.
+        const updated = await db.update(orders)
+            .set(patch)
+            .where(inArray(orders.orderNumber, codes))
+            .returning();
+
+        // ② §10 scenario 2: an agency claiming company orders becomes those
+        // clients' agency — insert every missing link in ONE statement.
+        if (isAgency && user.organizationId) {
+            const clientOrgIds = [...new Set(
+                updated.map((o) => o.organizationId).filter(Boolean).filter((id) => id !== user.organizationId),
+            )];
+            if (clientOrgIds.length > 0) {
+                await db.insert(clientAgencyLinks)
+                    .values(clientOrgIds.map((clientOrgId) => ({
+                        clientOrgId, agencyOrgId: user.organizationId, status: 'active', createdBy: user.id,
+                    })))
+                    .onConflictDoNothing();
+            }
+        }
+
+        // Per-code summary for the toast (rows updated, grouped by code).
+        const byCode = new Map();
+        for (const o of updated) byCode.set(o.orderNumber, (byCode.get(o.orderNumber) || 0) + 1);
+        const results = codes.map((code) => ({ orderNumber: code, claimed: byCode.get(code) || 0 }));
+        return {
+            bookings: results.filter((r) => r.claimed > 0).length,
+            vehicles: updated.length,
+            results,
+        };
+    },
+
+    // Stage 2 — release a claimed booking back to the open pool.
+    async releaseByOrderNumber(orderNumber) {
+        if (!orderNumber) return [];
+        return db.update(orders)
+            .set({ claimedByUserId: null, claimedByAgencyId: null, claimStatus: 'unclaimed', updatedAt: new Date() })
+            .where(eq(orders.orderNumber, orderNumber))
+            .returning();
+    },
+
+    // Stage 2 — decide the INITIAL ownership of a brand-new booking, per the
+    // three ownership rules:
+    //   Rule 3 — an AGENCY creator (agency admin / superadmin acting as one)
+    //            owns the order immediately → 'agency_claimed' to their org.
+    //   Rule 1 — a CLIENT-created order whose company is served by exactly ONE
+    //            agency is auto-claimed by that agency.
+    //   Rule 2 — a CLIENT-created order whose company has 0 or >1 agencies (or
+    //            an anonymous/private order) is left 'unclaimed' so it surfaces
+    //            in Klaim Order and all eligible agencies are notified.
+    // An affiliate link (`affiliateAgency`, pre-resolved from ?ref=<code>) wins
+    // over everything — the order belongs to that agent's agency.
+    // Returns a partial { claimStatus, claimedByAgencyId?, claimedByUserId? }
+    // to spread into create().
+    async resolveInitialClaim({ user = null, targetOrgId = null, affiliateAgency = null }) {
+        if (affiliateAgency?.organizationId) {
+            return {
+                claimedByAgencyId: affiliateAgency.organizationId,
+                claimedByUserId: affiliateAgency.id || null,
+                claimStatus: 'agency_claimed',
+            };
+        }
+
+        // Rule 3 — the vendor (agency / superadmin) creating the order OWNS it
+        // immediately, so it is never open for claiming. This holds even when
+        // the account has no organization yet (e.g. a manually-created
+        // superadmin) — claimedByAgencyId is simply null in that case, but the
+        // order is still marked claimed so it stays out of Klaim Order.
+        const actsAsAgency = !!user && (user.accountType === 'agency' || user.role === 'superadmin');
+        if (actsAsAgency) {
+            return {
+                claimedByAgencyId: user.organizationId || null,
+                claimedByUserId: user.id,
+                claimStatus: 'agency_claimed',
+            };
+        }
+
+        // Rules 1 & 2 — client-created (or anonymous company) order: route by
+        // how many agencies actively serve the order's client org.
+        if (targetOrgId) {
+            const links = await db
+                .select({ agencyOrgId: clientAgencyLinks.agencyOrgId })
+                .from(clientAgencyLinks)
+                .where(and(
+                    eq(clientAgencyLinks.clientOrgId, targetOrgId),
+                    eq(clientAgencyLinks.status, 'active'),
+                ));
+            if (links.length === 1) {
+                return {
+                    claimedByAgencyId: links[0].agencyOrgId,
+                    claimedByUserId: null,
+                    claimStatus: 'agency_claimed',
+                };
+            }
+        }
+
+        // Rule 2 (and scenario 1/2): leave open for claiming.
+        return { claimStatus: 'unclaimed' };
+    },
+
+    // Stage 2 — bookings the caller may claim. §10 visibility:
+    //   • private/anonymous (no org)         → open to ALL agencies (scenario 1)
+    //   • company whose client has no agency → open to ALL agencies (scenario 2)
+    //   • company linked to this agency      → this agency (scenario 3)
+    // CLAIMING IS AN AGENCY ACTION. Clients never claim — their orders are
+    // handled by the serving agency — so a client's Klaim list is always EMPTY
+    // (including their own submissions). Superadmin sees all unclaimed.
+    async findClaimable(scopeUser = null) {
+        const isAgencyOrSuper = scopeUser?.role === 'superadmin'
+            || scopeUser?.accountType === 'agency';
+        if (!isAgencyOrSuper) return [];
+
+        const unclaimed = or(eq(orders.claimStatus, 'unclaimed'), isNull(orders.claimStatus));
+        let where;
+
+        if (scopeUser?.role === 'superadmin') {
+            where = unclaimed;
+        } else { // agency
+            const myOrg = scopeUser.organizationId;
+            where = and(
+                unclaimed,
+                eq(orders.isDemo, false),
+                or(
+                    isNull(orders.organizationId), // scenario 1
+                    ...(myOrg ? [eq(orders.organizationId, myOrg)] : []),
+                    ...(myOrg ? [sql`${orders.organizationId} IN (SELECT client_org_id FROM client_agency_links WHERE agency_org_id = ${myOrg} AND status = 'active')`] : []), // scenario 3
+                    sql`(${orders.organizationId} IS NOT NULL AND ${orders.organizationId} NOT IN (SELECT client_org_id FROM client_agency_links WHERE status = 'active'))`, // scenario 2
+                ),
+            );
+        }
+
+        const rows = await db
+            .select({ order: orders, car: cars, customer: customers, driver: drivers })
+            .from(orders)
+            .leftJoin(cars, eq(orders.carId, cars.id))
+            .leftJoin(customers, eq(orders.customerId, customers.id))
+            .leftJoin(drivers, eq(orders.driverId, drivers.id))
+            .where(where)
+            .orderBy(desc(orders.createdAt));
+        return rows.map(r => ({ ...r.order, car: r.car, customer: r.customer, driver: r.driver }));
+    },
+
     async markWhatsAppSent(id) {
         const result = await db.update(orders).set({ whatsappSent: true, updatedAt: new Date() }).where(eq(orders.id, id)).returning();
         return result[0];
@@ -451,6 +650,7 @@ export const orderService = {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            claimedByAgencyId: orders.claimedByAgencyId,
         });
 
         let baseQuery = db.select({ count: sql`1` }).from(orders);

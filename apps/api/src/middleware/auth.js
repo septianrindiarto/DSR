@@ -25,6 +25,28 @@ export async function requireAuth(req, res, next) {
 }
 
 /**
+ * Optional auth — attaches req.user/req.session IF a valid session cookie is
+ * present, but NEVER rejects. Use on routes that are public but behave
+ * differently for a logged-in caller (e.g. POST /orders/public: a dashboard
+ * submission by an agency must be recognised as theirs, while an anonymous
+ * landing submission still works).
+ */
+export async function optionalAuth(req, res, next) {
+    try {
+        const session = await auth.api.getSession({
+            headers: fromNodeHeaders(req.headers),
+        });
+        if (session) {
+            req.user = session.user;
+            req.session = session.session;
+        }
+    } catch {
+        // ignore — treat as anonymous
+    }
+    next();
+}
+
+/**
  * Middleware to require admin role (company admin OR superadmin).
  * Must be used after requireAuth.
  */
