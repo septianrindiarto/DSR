@@ -853,8 +853,10 @@ export default function AdminOrders() {
         nama: r.nama,
         companyName: r.companyName,
         paket: r.paket,
-        pickupDate: r.pickupDate ? new Date(r.pickupDate).toISOString().slice(0, 10) : "",
-        returnDate: r.returnDate ? new Date(r.returnDate).toISOString().slice(0, 10) : "",
+        // Backend /data/export returns dates under tglPemakaian / tglSelesai
+        // (fall back to pickupDate/returnDate just in case).
+        pickupDate: (r.tglPemakaian || r.pickupDate) ? new Date(r.tglPemakaian || r.pickupDate).toISOString().slice(0, 10) : "",
+        returnDate: (r.tglSelesai || r.returnDate) ? new Date(r.tglSelesai || r.returnDate).toISOString().slice(0, 10) : "",
         jumlahHari: r.jumlahHari,
         mobil: r.mobil,
         plat: r.plat,
