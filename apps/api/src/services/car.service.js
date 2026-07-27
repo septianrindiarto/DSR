@@ -100,6 +100,28 @@ export const carService = {
         return result[0];
     },
 
+    // Bulk delete several units. A car with an ACTIVE order (pending/confirmed/
+    // active) is SKIPPED so we never orphan a live booking; the rest are
+    // deleted. Returns { deleted, skipped, skippedNames } for the toast.
+    async bulkDelete(ids) {
+        const cleanIds = (Array.isArray(ids) ? ids : []).map(Number).filter(Boolean);
+        let deleted = 0, skipped = 0;
+        const skippedNames = [];
+        for (const id of cleanIds) {
+            try {
+                if (await this.hasActiveOrders(id)) {
+                    const c = await this.findById(id);
+                    skippedNames.push(c?.name || `#${id}`);
+                    skipped++;
+                    continue;
+                }
+                await this.delete(id);
+                deleted++;
+            } catch { skipped++; }
+        }
+        return { deleted, skipped, skippedNames };
+    },
+
     async hasActiveOrders(carId) {
         const result = await db.select({ count: sql`count(*)` }).from(orders)
             .where(and(

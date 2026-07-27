@@ -22,6 +22,19 @@ const COMPANY = {
   wa: "082219812530",
 };
 
+// ─── Document numbering — reads the prefixes configured in
+// Pengaturan → Penomoran Dokumen (localStorage "dsr:settings:numbering") so
+// invoice numbers follow the user's setting, e.g. "26/DSR/INV/C086". Read
+// fresh each call so changes in Settings take effect without a reload.
+function loadNumbering() {
+  try { return JSON.parse(localStorage.getItem("dsr:settings:numbering")) || {}; }
+  catch { return {}; }
+}
+function invoiceNoFor(orderNumber) {
+  const n = loadNumbering();
+  return `${n.yearPrefix || "26"}/${n.invoicePrefix || "DSR/INV/"}${orderNumber || ""}`;
+}
+
 // ─── Indonesian number to words (terbilang) — ported from Python ─────────────
 const SATUAN = ["", "Satu", "Dua", "Tiga", "Empat", "Lima", "Enam", "Tujuh", "Delapan", "Sembilan"];
 const BELASAN = ["Sepuluh", "Sebelas", "Dua Belas", "Tiga Belas", "Empat Belas",
@@ -318,9 +331,13 @@ export default function AdminDocuments() {
       const ids = [...selectedPending].map((id, idx) => {
         const order = pending.find(o => o.id === id);
         const suffix = String(idx + 1).padStart(3, "0");
+        // Manual override prefix wins; otherwise use the configured
+        // "{year}/{invoicePrefix}{kodeTransaksi}" format (e.g. 26/DSR/INV/C086)
+        // so bulk numbers match the Penomoran Dokumen setting instead of the
+        // backend's INV-YYYYMM fallback.
         const invNo = bulkInvoicePrefix
           ? `${bulkInvoicePrefix}-${suffix}`
-          : null;
+          : invoiceNoFor(order?.orderNumber);
         return { id, invoiceNumber: invNo };
       });
       const res = await api.sync.bulkMarkInvoiceGenerated({
@@ -444,7 +461,7 @@ export default function AdminDocuments() {
       const siblings = bookingSiblings(order);
       setInvoiceOrderIds(siblings.map(o => o.id));
       setForm({
-        invoiceNo: `26/DSR/INV/${order.orderNumber || ""}`,
+        invoiceNo: invoiceNoFor(order.orderNumber),
         clientName: customerLabel,
         clientAddress: addr,
         date: order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO(),
@@ -1451,7 +1468,7 @@ export default function AdminDocuments() {
                     placeholder="cth: 26/DSR/INV → akan jadi 26/DSR/INV-001, 002, …"
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-200"
                   />
-                  <p className="text-xs text-slate-400 mt-1">Kosongkan jika nomor invoice akan diisi manual nanti.</p>
+                  <p className="text-xs text-slate-400 mt-1">Kosongkan untuk memakai format Penomoran Dokumen otomatis (mis. 26/DSR/INV/C086).</p>
                 </div>
 
                 {/* Invoice date */}
@@ -1953,15 +1970,19 @@ function InvoiceTemplate({ form }) {
   const disc = auto ? subTotal * 0.05 : Number(form.discount || 0);
   const grand = subTotal - disc;
   const dateStr = fmtDateID(form.date);
-  // Signature date always reflects the day the invoice is being signed/printed,
-  // not the invoice's transaction date.
-  const signatureDateStr = fmtDateID(new Date());
+  // Approval/signature date follows the editable "Tanggal" field (form.date),
+  // which defaults to the order's tanggal pemakaian (pickup date) and can be
+  // changed to any date. Both the invoice and the kuitansi signature use it.
+  const signatureDateStr = fmtDateID(form.date);
 
   return (
     <div className="doc-page doc-page-a4" style={{ display: "flex", flexDirection: "column", height: "297mm", boxSizing: "border-box" }}>
 
       {/* ── TOP HALF — Invoice ────────────────────────────────── */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+      {/* Sizes to its content (min ~half page) so the signature is never
+          clipped when a booking has 3+ line items. Was `flex:1 overflow:hidden`
+          which truncated the signatory once the table exceeded half the page. */}
+      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", minHeight: "138mm" }}>
         <CompanyHeader />
 
         {/* Optional company letter number (top-left), only when reserved. */}

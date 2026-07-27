@@ -169,6 +169,7 @@ export const api = {
         create: (data) => api.post('/api/cars', data),
         update: (id, data) => api.put(`/api/cars/${id}`, data),
         bulkStatus: (ids, status) => api.put('/api/cars/bulk-status', { ids, status }),
+        bulkDelete: (ids) => api.post('/api/cars/bulk-delete', { ids }),
         delete: (id) => api.delete(`/api/cars/${id}`),
         stats: () => api.get('/api/cars/stats'),
         uploadImages: (formData) => api.post('/api/cars/upload', formData),

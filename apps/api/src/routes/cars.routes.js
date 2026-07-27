@@ -128,6 +128,15 @@ router.put('/bulk-status', requireAuth, requireAdmin, validate(bulkStatusSchema)
     } catch (error) { next(error); }
 });
 
+// Bulk delete units. Literal path — registered before /:id.
+const bulkDeleteSchema = z.object({ ids: z.array(z.number().int()).min(1).max(500) });
+router.post('/bulk-delete', requireAuth, requireAdmin, validate(bulkDeleteSchema), activityLogger('delete', 'car'), async (req, res, next) => {
+    try {
+        const result = await carService.bulkDelete(req.body.ids);
+        res.json(result);
+    } catch (error) { next(error); }
+});
+
 router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'car'), async (req, res, next) => {
     try {
         const car = await carService.update(parseInt(req.params.id), req.body);

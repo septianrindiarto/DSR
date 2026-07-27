@@ -256,6 +256,21 @@ export default function AdminFleet() {
     } catch (e) { toast.error(e.message); }
   }
 
+  async function handleBulkDelete() {
+    const ids = [...selectedCars];
+    if (!ids.length) return;
+    if (!window.confirm(`Hapus ${ids.length} unit terpilih? Tindakan ini permanen.`)) return;
+    try {
+      const res = await api.cars.bulkDelete(ids);
+      apiCache.invalidate("cars:");
+      setSelectedCars(new Set());
+      loadCars();
+      let msg = `${res?.deleted ?? 0} unit dihapus.`;
+      if (res?.skipped) msg += ` ${res.skipped} dilewati (masih ada order aktif): ${(res.skippedNames || []).join(", ")}`;
+      res?.skipped ? toast.error(msg) : toast.success(msg);
+    } catch (e) { toast.error(e.message); }
+  }
+
   // No full-page spinner gate — page renders immediately. The empty-state row
   // shows a subtle inline loader during the initial fetch.
 
@@ -365,6 +380,11 @@ export default function AdminFleet() {
           <button onClick={() => handleBulkStatus("available")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("available")}</button>
           <button onClick={() => handleBulkStatus("maintenance")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer">{t("maintenance") || "Perbaikan"}</button>
           <button onClick={() => handleBulkStatus("rented")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 cursor-pointer">{t("rented")}</button>
+          <span className="text-slate-300">·</span>
+          <button onClick={handleBulkDelete} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">
+            <span className="material-symbols-outlined text-[14px]">delete</span>
+            Hapus
+          </button>
           <button onClick={() => setSelectedCars(new Set())} className="ml-auto text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Bersihkan</button>
         </div>
       )}
