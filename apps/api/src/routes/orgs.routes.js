@@ -9,9 +9,9 @@
 
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { organizations } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { organizations, clientAgencyLinks, user as userTable } from '../db/schema.js';
+import { eq, sql, inArray } from 'drizzle-orm';
+import { requireAuth, requireRole, requireSuperAdmin } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { generateUniqueInviteCode } from '../services/invite-code.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
@@ -147,6 +147,7 @@ router.get('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
             signatory: org.signatory || '',
             brand: org.brand || '',
             npwp: org.npwp || '',
+            docNumbering: org.docNumbering || null,
             isCallerAdmin: org.adminUserId === req.user.id,
         });
     } catch (err) { next(err); }
@@ -156,7 +157,7 @@ router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
     try {
         const org = await loadCallerOrgIfAdmin(req, res);
         if (!org) return;
-        const allowed = ['name', 'address', 'phone1', 'phone2', 'email', 'signatory', 'brand', 'npwp'];
+        const allowed = ['name', 'address', 'phone1', 'phone2', 'email', 'signatory', 'brand', 'npwp', 'docNumbering'];
         const patch = { updatedAt: new Date() };
         for (const k of allowed) {
             if (req.body[k] !== undefined) patch[k] = req.body[k];
@@ -180,6 +181,7 @@ router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
             signatory: updated.signatory || '',
             brand: updated.brand || '',
             npwp: updated.npwp || '',
+            docNumbering: updated.docNumbering || null,
             message: 'Informasi perusahaan tersimpan.',
         });
     } catch (err) { next(err); }
@@ -239,6 +241,117 @@ router.post('/my-invite-code/rotate', requireAuth, requireRole(ROLE_GROUPS.ANY_A
             inviteCode: newCode,
             message: 'Kode undangan baru berhasil dibuat. Kode lama tidak berlaku lagi.',
         });
+    } catch (err) { next(err); }
+});
+
+// ─── Superadmin: platform-wide organization & relationship management ────────
+// All routes here are superadmin-only. Paths are literal (no clash with the
+// caller-scoped routes above).
+const SA = [requireAuth, requireSuperAdmin];
+
+// List every organization with a computed type (agency = parent_agency_id NULL)
+// and its admin email.
+router.get('/all', ...SA, async (req, res, next) => {
+    try {
+        const rows = await db.select().from(organizations).orderBy(organizations.name);
+        const adminIds = [...new Set(rows.map(o => o.adminUserId).filter(Boolean))];
+        let admins = [];
+        if (adminIds.length) {
+            admins = await db.select({ id: userTable.id, email: userTable.email })
+                .from(userTable).where(inArray(userTable.id, adminIds));
+        }
+        const adminMap = new Map(admins.map(a => [a.id, a.email]));
+        res.json({ data: rows.map(o => ({
+            id: o.id,
+            name: o.name,
+            displayId: o.displayId || null,
+            type: o.parentAgencyId == null ? 'agency' : 'client',
+            parentAgencyId: o.parentAgencyId,
+            isActive: o.isActive,
+            agencyCode: o.agencyCode || null,
+            adminEmail: o.adminUserId ? (adminMap.get(o.adminUserId) || null) : null,
+        })) });
+    } catch (err) { next(err); }
+});
+
+// Create an org. type 'agency' → parent NULL; 'client' → parent = chosen agency.
+router.post('/admin', ...SA, async (req, res, next) => {
+    try {
+        const { name, type, parentAgencyId, address, phone1, email } = req.body || {};
+        if (!name || !String(name).trim()) return res.status(400).json({ error: 'Nama wajib diisi.' });
+        const normalized = String(name).toLowerCase().replace(/\s+/g, ' ').trim();
+        const [dup] = await db.select({ id: organizations.id }).from(organizations)
+            .where(sql`LOWER(TRIM(${organizations.name})) = ${normalized}`).limit(1);
+        if (dup) return res.status(409).json({ error: `Organisasi "${name}" sudah ada.` });
+        const parent = type === 'client' ? (Number(parentAgencyId) || null) : null;
+        const [row] = await db.insert(organizations).values({
+            name: String(name).trim(), nameNormalized: normalized, isActive: true,
+            parentAgencyId: parent, address: address || null, phone1: phone1 || null, email: email || null,
+        }).returning();
+        res.status(201).json(row);
+    } catch (err) { next(err); }
+});
+
+// Update an org — name / active / parent agency.
+router.put('/:id/admin', ...SA, async (req, res, next) => {
+    try {
+        const id = Number(req.params.id);
+        const patch = { updatedAt: new Date() };
+        if (req.body.name !== undefined) {
+            patch.name = req.body.name;
+            patch.nameNormalized = String(req.body.name).toLowerCase().replace(/\s+/g, ' ').trim();
+        }
+        if (req.body.isActive !== undefined) patch.isActive = Boolean(req.body.isActive);
+        if (req.body.parentAgencyId !== undefined) {
+            patch.parentAgencyId = req.body.parentAgencyId === null ? null : Number(req.body.parentAgencyId);
+        }
+        const [row] = await db.update(organizations).set(patch).where(eq(organizations.id, id)).returning();
+        if (!row) return res.status(404).json({ error: 'Organisasi tidak ditemukan.' });
+        res.json(row);
+    } catch (err) { next(err); }
+});
+
+// All client↔agency links (with names).
+router.get('/all-links', ...SA, async (req, res, next) => {
+    try {
+        const links = await db.select().from(clientAgencyLinks);
+        const ids = [...new Set(links.flatMap(l => [l.clientOrgId, l.agencyOrgId]).filter(Boolean))];
+        let orgs = [];
+        if (ids.length) {
+            orgs = await db.select({ id: organizations.id, name: organizations.name })
+                .from(organizations).where(inArray(organizations.id, ids));
+        }
+        const nameMap = new Map(orgs.map(o => [o.id, o.name]));
+        res.json({ data: links.map(l => ({
+            id: l.id,
+            clientOrgId: l.clientOrgId, agencyOrgId: l.agencyOrgId,
+            clientName: nameMap.get(l.clientOrgId) || `#${l.clientOrgId}`,
+            agencyName: nameMap.get(l.agencyOrgId) || `#${l.agencyOrgId}`,
+            status: l.status,
+        })) });
+    } catch (err) { next(err); }
+});
+
+// Create a client↔agency link.
+router.post('/all-links', ...SA, async (req, res, next) => {
+    try {
+        const clientOrgId = Number(req.body.clientOrgId);
+        const agencyOrgId = Number(req.body.agencyOrgId);
+        if (!clientOrgId || !agencyOrgId || clientOrgId === agencyOrgId) {
+            return res.status(400).json({ error: 'Pilih klien dan agency yang berbeda.' });
+        }
+        await db.insert(clientAgencyLinks)
+            .values({ clientOrgId, agencyOrgId, status: 'active', createdBy: req.user.id })
+            .onConflictDoNothing();
+        res.status(201).json({ ok: true });
+    } catch (err) { next(err); }
+});
+
+// Hard-delete a link.
+router.delete('/all-links/:id', ...SA, async (req, res, next) => {
+    try {
+        await db.delete(clientAgencyLinks).where(eq(clientAgencyLinks.id, Number(req.params.id)));
+        res.json({ ok: true });
     } catch (err) { next(err); }
 });
 

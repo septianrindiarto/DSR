@@ -29,12 +29,19 @@ jobs:
           script: |
             set -e
             cd /home/dsr/dsr
-            echo "[deploy] pulling latest…"
-            git pull --ff-only
+            echo "[deploy] syncing to origin/main…"
+            # Hard-sync instead of --ff-only: the VPS is a deploy target, never a
+            # place to commit, so force it to match origin even if it diverged
+            # from a manual pull/build. .env and other gitignored files are left
+            # untouched by reset --hard.
+            git fetch origin main
+            git reset --hard origin/main
             echo "[deploy] installing API deps…"
             cd apps/api && npm ci --omit=dev
             echo "[deploy] building web…"
-            cd ../web && npm ci && npm run build
+            # VITE_API_BASE MUST be the full https origin — without it the bundle
+            # falls back to http://localhost:5000 and the live site "fails to fetch".
+            cd ../web && npm ci && VITE_API_BASE=https://dsrappai.com npm run build
             echo "[deploy] reloading API…"
             pm2 reload dsr-api
             echo "[deploy] done at $(date)"

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useId } from "react";
 import { useToast } from "../components/Toast";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
@@ -146,7 +146,8 @@ function defaultForm(type) {
         to: "",                                        // Kepada (client company)
         from: 'Rental Mobil "DSR"',                    // Dari
         lampiran: "Rekap Tagihan Sewa Kendaraan",      // Lampiran
-        usageDate: today,                              // tanggal pemakaian (for the berita)
+        usageDate: today,                              // tgl mulai pemakaian (for the berita)
+        usageEndDate: today,                           // tgl selesai pemakaian (for the berita)
         date: today,                                   // tanggal surat
         bankAccount: COMPANY.bankAccount,
         bankName: COMPANY.bankName,
@@ -199,6 +200,15 @@ export default function AdminDocuments() {
   // Sourced from /api/customers?customerType=company so the registry is the
   // same data the Pelanggan page edits — no duplicate state of truth.
   const [companies, setCompanies] = useState(() => apiCache.get("documents:companies") || []);
+  const [companySugg, setCompanySugg] = useState([]); // per-user booking history names
+  // Merged, de-duped company names for document autosuggest (registered orgs +
+  // companies the user has booked for).
+  const companyNames = useMemo(() => {
+    const s = new Set();
+    (companies || []).forEach((c) => c?.name && s.add(String(c.name).trim()));
+    (companySugg || []).forEach((n) => n && s.add(String(n).trim()));
+    return [...s].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }, [companies, companySugg]);
   const [showCompanyPicker, setShowCompanyPicker] = useState(false);
   const [companySearch, setCompanySearch] = useState("");
   // companyForm modes: null = list view, "new" = add form, <id> = edit form
@@ -244,6 +254,22 @@ export default function AdminDocuments() {
     swr("documents:companies", () => api.companies.list("limit=5000"), (res) => {
       setCompanies(res?.data || []);
     }).catch(err => console.error("Failed to load companies:", err));
+
+    // Per-user company history — enriches the document autosuggest lists.
+    api.orders.companySuggestions()
+      .then((r) => setCompanySugg(r?.data || []))
+      .catch(() => { /* non-fatal */ });
+
+    // Hydrate document-numbering prefixes from the org (DB) into localStorage,
+    // so invoiceNoFor() uses the company's shared config even on a device that
+    // never opened Pengaturan. Falls back silently to whatever is already local.
+    api.myOrg.getInfo()
+      .then((info) => {
+        if (info?.docNumbering && typeof info.docNumbering === "object") {
+          try { localStorage.setItem("dsr:settings:numbering", JSON.stringify(info.docNumbering)); } catch { /* ignore */ }
+        }
+      })
+      .catch(() => { /* no org / not permitted — keep local defaults */ });
   }, []);
 
   // Filter the pending list by search term
@@ -494,6 +520,7 @@ export default function AdminDocuments() {
         ...prev,                                       // keep a reserved letterNo if already taken
         to: customerLabel,
         usageDate: order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO(),
+        usageEndDate: order.returnDate ? new Date(order.returnDate).toISOString().slice(0, 10) : (order.pickupDate ? new Date(order.pickupDate).toISOString().slice(0, 10) : todayISO()),
         date: todayISO(),
       }));
     } else if (docType === "perjanjian") {
@@ -1013,7 +1040,7 @@ export default function AdminDocuments() {
             </div>
             {docType === "invoice" && <InvoiceForm form={form} setForm={setForm} openTripLookup={openTripLookup} openCompanyPicker={openCompanyPicker} />}
             {docType === "surat_jalan" && <SuratJalanForm form={form} setForm={setForm} openTripLookup={openTripLookup} />}
-            {docType === "surat_tagihan" && <SuratTagihanForm form={form} setForm={setForm} />}
+            {docType === "surat_tagihan" && <SuratTagihanForm form={form} setForm={setForm} companyNames={companyNames} openOrderPicker={() => setShowOrderPicker(true)} />}
             {docType === "penawaran" && <PenawaranForm form={form} setForm={setForm} />}
             {docType === "perjanjian" && <PerjanjianForm form={form} setForm={setForm} />}
           </div>
@@ -1511,12 +1538,20 @@ export default function AdminDocuments() {
 // Form components — one per doc type
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function Field({ label, value, onChange, type = "text", placeholder = "" }) {
+function Field({ label, value, onChange, type = "text", placeholder = "", options = null }) {
+  const listId = useId();
+  const hasOptions = Array.isArray(options) && options.length > 0;
   return (
     <div>
       <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
       <input type={type} value={value ?? ""} onChange={(e) => onChange(type === "number" ? Number(e.target.value) : e.target.value)} placeholder={placeholder}
+        list={hasOptions ? listId : undefined}
         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
+      {hasOptions && (
+        <datalist id={listId}>
+          {options.map((o, i) => <option key={i} value={o} />)}
+        </datalist>
+      )}
     </div>
   );
 }
@@ -1771,7 +1806,7 @@ function SuratJalanForm({ form, setForm, openTripLookup }) {
   );
 }
 
-function SuratTagihanForm({ form, setForm }) {
+function SuratTagihanForm({ form, setForm, companyNames = [], openOrderPicker }) {
   const toast = useToast();
   const [reserving, setReserving] = useState(false);
   const upd = (patch) => setForm({ ...form, ...patch });
@@ -1792,6 +1827,16 @@ function SuratTagihanForm({ form, setForm }) {
 
   return (
     <>
+      {openOrderPicker && (
+        <button
+          type="button"
+          onClick={openOrderPicker}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-primary/30 bg-primary/5 text-primary text-sm font-semibold hover:bg-primary/10 cursor-pointer"
+        >
+          <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+          Isi dari Kode Transaksi
+        </button>
+      )}
       <div>
         <label className="block text-xs font-medium text-slate-600 mb-1">No. Surat</label>
         <div className="flex gap-2">
@@ -1814,12 +1859,13 @@ function SuratTagihanForm({ form, setForm }) {
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Kepada (Klien)" value={form.to} onChange={(v) => upd({ to: v })} />
+        <Field label="Kepada (Klien)" value={form.to} onChange={(v) => upd({ to: v })} options={companyNames} />
         <Field label="Tanggal Surat" type="date" value={form.date} onChange={(v) => upd({ date: v })} />
       </div>
+      <Field label="Dari" value={form.from} onChange={(v) => upd({ from: v })} />
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Dari" value={form.from} onChange={(v) => upd({ from: v })} />
-        <Field label="Tgl Pemakaian (di berita)" type="date" value={form.usageDate} onChange={(v) => upd({ usageDate: v })} />
+        <Field label="Tgl Mulai (di berita)" type="date" value={form.usageDate} onChange={(v) => upd({ usageDate: v })} />
+        <Field label="Tgl Selesai (di berita)" type="date" value={form.usageEndDate} onChange={(v) => upd({ usageEndDate: v })} />
       </div>
       <Field label="Lampiran" value={form.lampiran} onChange={(v) => upd({ lampiran: v })} />
 
@@ -2191,7 +2237,7 @@ function SuratJalanTemplate({ form }) {
 function SuratTagihanTemplate({ form }) {
   // Berita body — mirrors the standard billing-transmittal wording, with the
   // usage date and payment details interpolated from the form.
-  const berita = `Bersama ini Kami sampaikan rekap tagihan atas pemakaian pada tanggal ${fmtDateID(form.usageDate)}. ` +
+  const berita = `Bersama ini Kami sampaikan rekap tagihan atas pemakaian pada tanggal ${fmtDateRange(form.usageDate, form.usageEndDate)}. ` +
     `Pembayaran atas tagihan tersebut hendaknya ditransfer ke rek. ${form.bankAccount || "-"} an. ${form.bankHolder || "-"} ` +
     `pada Bank ${form.bankName || "-"} dan harap memberikan Notifikasi pembayaran pada email ${form.email || "-"} ` +
     `atau WA di ${form.wa || "-"}`;
@@ -2222,13 +2268,12 @@ function SuratTagihanTemplate({ form }) {
       {metaRow("Dari", form.from)}
       {metaRow("Lampiran", form.lampiran)}
 
-      {/* Berita */}
+      {/* Berita — body sits inline in the value cell, aligned with the label. */}
       <div style={{ display: "flex", marginTop: "1mm" }}>
         <div style={{ width: "20mm", fontWeight: "bold" }}>Berita</div>
         <div style={{ width: "3mm" }}>:</div>
-        <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, textAlign: "justify", lineHeight: 1.5 }}>{berita}</div>
       </div>
-      <div style={{ textAlign: "justify", marginTop: "1mm", marginLeft: "23mm", lineHeight: 1.5 }}>{berita}</div>
 
       {/* Signatures */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: "7mm" }}>

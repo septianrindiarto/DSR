@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { LanguageProvider, useLanguage } from "./context/LanguageContext";
@@ -6,19 +6,31 @@ import { canAccess, FEATURES } from "./lib/permissions";
 import RequestAccessModal from "./components/RequestAccessModal";
 import LandingPage from "./pages/LandingPage";
 import AdminLogin from "./pages/AdminLogin";
-import AdminDashboard from "./pages/AdminDashboard";
-import AdminFleet from "./pages/AdminFleet";
-import AdminOrders from "./pages/AdminOrders";
-import AdminSchedule from "./pages/AdminSchedule";
-import AdminCustomers from "./pages/AdminCustomers";
-import AdminDrivers from "./pages/AdminDrivers";
-import AdminAnalytics from "./pages/AdminAnalytics";
-import AdminFinance from "./pages/AdminFinance";
-import AdminDocuments from "./pages/AdminDocuments";
-import AdminSettings from "./pages/AdminSettings";
-import AdminUsers from "./pages/AdminUsers";
-import AdminAccessRequests from "./pages/AdminAccessRequests";
-import AdminClaimOrders from "./pages/AdminClaimOrders";
+// Admin pages are code-split: each loads its own chunk on first visit, so the
+// public landing bundle stays small and heavy pages (Dokumen, Rekap, Keuangan)
+// show a spinner instead of a blank screen while they load.
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const AdminFleet = lazy(() => import("./pages/AdminFleet"));
+const AdminOrders = lazy(() => import("./pages/AdminOrders"));
+const AdminSchedule = lazy(() => import("./pages/AdminSchedule"));
+const AdminCustomers = lazy(() => import("./pages/AdminCustomers"));
+const AdminDrivers = lazy(() => import("./pages/AdminDrivers"));
+const AdminAnalytics = lazy(() => import("./pages/AdminAnalytics"));
+const AdminFinance = lazy(() => import("./pages/AdminFinance"));
+const AdminDocuments = lazy(() => import("./pages/AdminDocuments"));
+const AdminSettings = lazy(() => import("./pages/AdminSettings"));
+const AdminUsers = lazy(() => import("./pages/AdminUsers"));
+const AdminAccessRequests = lazy(() => import("./pages/AdminAccessRequests"));
+const AdminClaimOrders = lazy(() => import("./pages/AdminClaimOrders"));
+const AdminOrganizations = lazy(() => import("./pages/AdminOrganizations"));
+
+function PageSpinner() {
+  return (
+    <div className="flex items-center justify-center h-screen bg-[#f8f5f5]">
+      <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+    </div>
+  );
+}
 import VerifyEmail from "./pages/VerifyEmail";
 import CarDetail from "./pages/CarDetail";
 import NotFound from "./pages/NotFound";
@@ -95,6 +107,14 @@ function Guarded({ feature, children }) {
   );
 }
 
+// Superadmin-only gate (org management). Backend routes are the authoritative
+// check; this keeps the URL bar honest.
+function SuperadminRoute({ children }) {
+  const { user } = useAuth();
+  if (user?.role !== "superadmin") return <Navigate to="/admin/dashboard" replace />;
+  return children;
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -103,6 +123,7 @@ function App() {
           <ToastProvider>
           {/* WhatsApp FAB visible on ALL pages */}
           <WhatsAppFAB />
+          <Suspense fallback={<PageSpinner />}>
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/admin/login" element={<AdminLogin />} />
@@ -120,11 +141,13 @@ function App() {
             <Route path="/admin/users" element={<Guarded feature={FEATURES.USERS}><AdminUsers /></Guarded>} />
             <Route path="/admin/access-requests" element={<Guarded feature={FEATURES.USERS}><AdminAccessRequests /></Guarded>} />
             <Route path="/admin/claim-orders" element={<Guarded feature={FEATURES.ACCESS_REQUESTS}><AdminClaimOrders /></Guarded>} />
+            <Route path="/admin/organizations" element={<ProtectedRoute><SuperadminRoute><AdminOrganizations /></SuperadminRoute></ProtectedRoute>} />
             <Route path="/car/:id" element={<CarDetail />} />
             {/* Audit C-02: catch-all 404. Must remain LAST so it does not
                 shadow the routes above. */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
           </ToastProvider>
         </AuthProvider>
       </LanguageProvider>

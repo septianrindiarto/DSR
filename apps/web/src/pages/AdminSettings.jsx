@@ -60,6 +60,7 @@ const ALL_SECTIONS = [
   { id: "company",       label: "Informasi Perusahaan",   icon: "business" },
   { id: "relationships", label: "Mitra",                  icon: "handshake" },
   { id: "numbering",     label: "Penomoran Dokumen",      icon: "tag" },
+  { id: "terms",         label: "Termin Pembayaran",      icon: "event_available" },
   { id: "sync",          label: "Sinkronisasi Data",      icon: "cloud_sync" },
   { id: "notifications", label: "Notifikasi",             icon: "notifications" },
   { id: "prefs",         label: "Preferensi",             icon: "tune" },
@@ -75,7 +76,11 @@ function getVisibleSections(user) {
     || (user?.role === 'client' || user?.role === 'client_admin' ? 'client' : 'agency');
   const hasOrg = !!user?.organizationId;
 
-  if (accountType === 'agency') return ALL_SECTIONS;
+  if (accountType === 'agency') {
+    // Payment terms are invoice config → agency admins / superadmin only.
+    const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+    return isAdmin ? ALL_SECTIONS : ALL_SECTIONS.filter(s => s.id !== 'terms');
+  }
 
   // Client side
   const allowed = new Set(['profile', 'prefs']);
@@ -110,6 +115,14 @@ export default function AdminSettings() {
       .then((data) => {
         setCompany({ ...DEFAULT_COMPANY, ...data });
         setCompanyIsAdmin(Boolean(data?.isCallerAdmin));
+        // Hydrate document-numbering from the org (DB) so it's shared across
+        // devices/users. Mirror to localStorage — that's still the fast read
+        // path used by the Dokumen page.
+        if (data?.docNumbering && typeof data.docNumbering === "object") {
+          const merged = { ...DEFAULT_NUMBERING, ...data.docNumbering };
+          setNumbering(merged);
+          saveObj(NUMBERING_KEY, merged);
+        }
       })
       .catch((err) => console.error("Failed to load company info:", err));
   }, [user?.organizationId]);
@@ -152,9 +165,20 @@ export default function AdminSettings() {
     setCompany({ ...DEFAULT_COMPANY });
     saveObj(COMPANY_KEY, DEFAULT_COMPANY);
   }
-  function saveNumbering() {
+  async function saveNumbering() {
+    // Always keep the local read-path in sync (Dokumen page reads localStorage).
     saveObj(NUMBERING_KEY, numbering);
-    toast.success("Penomoran dokumen disimpan.");
+    // Persist to the org (DB) so the prefixes follow the company across devices.
+    if (user?.organizationId) {
+      try {
+        await api.myOrg.updateInfo({ docNumbering: numbering });
+        toast.success("Penomoran dokumen disimpan.");
+      } catch (err) {
+        toast.error("Tersimpan lokal, gagal sinkron ke server: " + (err.message || ""));
+      }
+      return;
+    }
+    toast.success("Penomoran dokumen disimpan (lokal).");
   }
   function savePrefs() {
     saveObj(PREFS_KEY, prefs);
@@ -227,6 +251,7 @@ export default function AdminSettings() {
           } />}
           {activeSection === "relationships" && <RelationshipManager />}
           {activeSection === "numbering" && <NumberingSection numbering={numbering} setNumbering={setNumbering} onSave={saveNumbering} />}
+          {activeSection === "terms"         && <PaymentTermsSection />}
           {activeSection === "sync"          && <SyncSection syncStatus={syncStatus} syncing={syncing} onTrigger={triggerSync} />}
           {activeSection === "notifications" && <NotificationsSection />}
           {activeSection === "prefs"         && <PrefsSection prefs={prefs} setPrefs={setPrefs} onSave={savePrefs} lang={lang} toggleLanguage={toggleLanguage} t={t} />}
@@ -508,6 +533,130 @@ function NumberingSection({ numbering, setNumbering, onSave }) {
         <Field label="Awalan Surat Perjanjian" value={numbering.perjanjianPrefix} onChange={(v) => upd({ perjanjianPrefix: v })} hint={`Contoh: ${example(numbering.perjanjianPrefix)}`} />
         <Field label="Awalan Surat Jalan" value={numbering.suratJalanPrefix} onChange={(v) => upd({ suratJalanPrefix: v })} hint={`Contoh: ${example(numbering.suratJalanPrefix)}`} />
       </div>
+    </Card>
+  );
+}
+
+// ─── Termin Pembayaran (D.2) ─────────────────────────────────────────────────
+// Default term (agency) + per-client term (company directory). Changing a
+// client's term never rewrites sent invoices; the affected ones are listed
+// with a "Batalkan & Buat Ulang" action instead.
+function PaymentTermsSection() {
+  const { t } = useLanguage();
+  const toast = useToast();
+  const [data, setData] = useState(null);             // { defaultTermDays, companies }
+  const [defaultDays, setDefaultDays] = useState("");
+  const [drafts, setDrafts] = useState({});           // orgId → string
+  const [search, setSearch] = useState("");
+  const [savingId, setSavingId] = useState(null);
+  const [affected, setAffected] = useState(null);     // { company, list }
+  const [reissuingId, setReissuingId] = useState(null);
+
+  function load() {
+    api.invoices.terms()
+      .then((r) => { setData(r); setDefaultDays(String(r?.defaultTermDays ?? "")); setDrafts({}); })
+      .catch((e) => toast.error(e.message));
+  }
+  useEffect(load, []);
+
+  async function saveDefault() {
+    const n = Number(defaultDays);
+    if (!Number.isInteger(n) || n < 0 || n > 365) { toast.error("0–365"); return; }
+    setSavingId("default");
+    try { await api.invoices.setDefaultTerm(n); toast.success(t("paymentTermSaved")); load(); }
+    catch (e) { toast.error(e.message); }
+    finally { setSavingId(null); }
+  }
+
+  async function saveCompany(c) {
+    const raw = drafts[c.id];
+    const days = raw === "" ? null : Number(raw);
+    if (days !== null && (!Number.isInteger(days) || days < 0 || days > 365)) { toast.error("0–365"); return; }
+    setSavingId(c.id);
+    try {
+      const r = await api.invoices.setCompanyTerm(c.id, days);
+      toast.success(t("paymentTermSaved"));
+      setData((d) => ({ ...d, companies: d.companies.map((x) => x.id === c.id ? { ...x, paymentTermDays: days } : x) }));
+      setDrafts((p) => { const n = { ...p }; delete n[c.id]; return n; });
+      if (r?.affected?.length) setAffected({ company: r.company, list: r.affected });
+    } catch (e) { toast.error(e.message); }
+    finally { setSavingId(null); }
+  }
+
+  async function reissue(inv) {
+    if (!confirm(t("invReissueConfirm"))) return;
+    setReissuingId(inv.id);
+    try {
+      await api.invoices.reissue(inv.id, "Perubahan termin pembayaran");
+      apiCache.invalidate("orders:"); apiCache.invalidate("documents:");
+      toast.success(t("invReissued"));
+      setAffected((a) => ({ ...a, list: a.list.filter((x) => x.id !== inv.id) }));
+    } catch (e) { toast.error(e.message); }
+    finally { setReissuingId(null); }
+  }
+
+  const fmtD = (d) => (d ? new Date(d).toLocaleDateString("id-ID") : "-");
+  const list = (data?.companies || []).filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <Card title={t("paymentTerms")} subtitle={t("paymentTermsDesc")}>
+      {!data ? <p className="text-sm text-slate-500">{t("loadingShort")}</p> : (
+        <div className="space-y-5">
+          <div className="flex items-end gap-3 flex-wrap">
+            <label className="block">
+              <span className="block text-sm font-medium text-slate-700 mb-1">{t("paymentTermDefault")} ({t("days")})</span>
+              <input type="number" min="0" max="365" value={defaultDays} onChange={(e) => setDefaultDays(e.target.value)}
+                className="w-32 px-3 py-2 border border-slate-200 rounded-lg text-sm" />
+            </label>
+            <button onClick={saveDefault} disabled={savingId === "default"}
+              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 cursor-pointer">{t("save")}</button>
+          </div>
+
+          <div>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("paymentTermSearch")}
+              className="w-full md:w-80 px-3 py-2 border border-slate-200 rounded-lg text-sm mb-3" />
+            <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-[420px] overflow-y-auto">
+              {list.length === 0 && <p className="p-4 text-sm text-slate-400 text-center">{t("noData")}</p>}
+              {list.map((c) => {
+                const draft = drafts[c.id];
+                const value = draft !== undefined ? draft : (c.paymentTermDays ?? "");
+                const dirty = draft !== undefined && String(draft) !== String(c.paymentTermDays ?? "");
+                return (
+                  <div key={c.id} className="flex items-center gap-3 px-3 py-2">
+                    <span className="flex-1 min-w-0 text-sm text-slate-800 truncate">{c.name}</span>
+                    <input type="number" min="0" max="365" value={value}
+                      placeholder={`${t("paymentTermUseDefault")} (${data.defaultTermDays})`}
+                      onChange={(e) => setDrafts((p) => ({ ...p, [c.id]: e.target.value }))}
+                      className="w-40 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" />
+                    <button onClick={() => saveCompany(c)} disabled={!dirty || savingId === c.id}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-40 cursor-pointer">
+                      {t("save")}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {affected?.list?.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm text-amber-800 mb-2"><b>{affected.company?.name}</b> — {t("paymentTermAffected")}</p>
+              <ul className="space-y-1.5">
+                {affected.list.map((inv) => (
+                  <li key={inv.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-mono text-slate-700">{inv.invoiceNumber}</span>
+                    <span className="text-xs text-slate-500">{fmtD(inv.sentDate)} → {fmtD(inv.dueDate)} · {inv.status}</span>
+                    <button onClick={() => reissue(inv)} disabled={reissuingId === inv.id}
+                      className="text-xs font-medium text-red-600 hover:underline disabled:opacity-60 cursor-pointer">
+                      {reissuingId === inv.id ? t("loadingShort") : t("invReissue")}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

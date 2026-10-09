@@ -18,7 +18,7 @@ const IMAGE_LABELS = ['Tampak Depan', 'Tampak Samping', 'Tampak Belakang'];
 
 const emptyForm = {
   name: "", brand: "", type: "MPV", category: "standard", year: 2024,
-  licensePlate: "", color: "", image: "", price: "",
+  licensePlate: "", isOwned: false, color: "", image: "", price: "",
   capacity: 7, transmission: "Automatic", fuel: "Bensin",
   description: "", features: [], status: "available", availableCount: 1,
   gallery: [],
@@ -93,7 +93,7 @@ export default function AdminFleet() {
     setForm({
       name: car.name, brand: car.brand, type: car.type,
       category: car.category || "standard", year: car.year || 2024,
-      licensePlate: car.licensePlate || "", color: car.color || "",
+      licensePlate: car.licensePlate || "", isOwned: !!car.isOwned, color: car.color || "",
       image: car.image, price: car.price,
       capacity: car.capacity, transmission: car.transmission,
       fuel: car.fuel || "Bensin", description: car.description || "",
@@ -445,7 +445,10 @@ export default function AdminFleet() {
                     <td className="px-3 py-3 text-left align-middle text-slate-600">{car.type}</td>
                     <td className="px-3 py-3 text-left align-middle"><span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 capitalize">{car.category}</span></td>
                     <td className="px-3 py-3 text-left align-middle text-slate-600">{car.year}</td>
-                    <td className="px-3 py-3 text-left align-middle text-slate-600">{car.licensePlate}</td>
+                    <td className="px-3 py-3 text-left align-middle text-slate-600">
+                      {car.licensePlate}
+                      {car.isOwned && <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase">{t("ownedBadge")}</span>}
+                    </td>
                     <td className="px-3 py-3 text-right align-middle font-semibold text-slate-700 tabular-nums">{formatPrice(car.price)}/hari</td>
                     <td className="px-3 py-3 text-left align-middle text-slate-600">{car.capacity} {t("seats")}</td>
                     <td className="px-3 py-3 text-left align-middle"><span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[car.status]}`}>{t(car.status)}</span></td>
@@ -524,6 +527,13 @@ export default function AdminFleet() {
                 <FormField label={t("year")} type="number" value={form.year} onChange={v => setForm({...form, year: v})} />
                 <FormField label={t("licensePlate")} value={form.licensePlate} onChange={v => setForm({...form, licensePlate: v})} />
                 <FormField label={`${t("color")}`} value={form.color} onChange={v => setForm({...form, color: v})} />
+                <label className="flex items-start gap-2 md:col-span-2 p-3 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer">
+                  <input type="checkbox" checked={!!form.isOwned} onChange={e => setForm({ ...form, isOwned: e.target.checked })} className="mt-0.5 cursor-pointer" />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-700">{t("ownedUnit")}</span>
+                    <span className="block text-xs text-slate-500">{t("ownedUnitHint")}</span>
+                  </span>
+                </label>
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-2">{t('vehiclePhotos')} * <span className="text-xs text-slate-400">({t('minImages')})</span></label>
                   <div className="grid grid-cols-3 gap-3">

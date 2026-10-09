@@ -23,6 +23,7 @@ import { organizations } from '../db/schema.js';
 import { eq, ilike, or, asc, desc, sql, and } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 import { findAvailableDisplayId } from './display-id.service.js';
+import { resolveDefaultAgencyId } from './relationship.service.js';
 
 // Convert an organizations row → legacy companies shape for frontend.
 function toCompanyShape(o) {
@@ -117,6 +118,9 @@ export const companyService = {
             }
         }
         const { displayId } = await findAvailableDisplayId(data.name, new Date());
+        // Owner agency = caller's org (agency admin), else the default agency
+        // (e.g. a superadmin with no org). No more hardcoded id 1.
+        const parentAgencyId = data.organizationId || data.parentAgencyId || (await resolveDefaultAgencyId());
         const result = await db.insert(organizations).values({
             name: data.name,
             nameNormalized: String(data.name || '').toLowerCase().replace(/\s+/g, ' ').trim(),
@@ -129,7 +133,7 @@ export const companyService = {
             email: data.email || null,
             notes: data.notes || null,
             displayId,
-            parentAgencyId: data.organizationId || data.parentAgencyId || 1,
+            parentAgencyId,
         }).returning();
         return toCompanyShape(result[0]);
     },

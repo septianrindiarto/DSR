@@ -55,6 +55,15 @@ export const organizations = pgTable('organizations', {
     // Stage 2 — per-agency join code; clients enter it (registration / Pengaturan)
     // to link to this agency.
     agencyCode: varchar('agency_code', { length: 20 }),
+    // Document numbering prefixes (Pengaturan → Penomoran Dokumen), stored per
+    // org so invoice/surat numbers are shared across devices/users instead of
+    // living only in each browser's localStorage. Shape: { yearPrefix,
+    // invoicePrefix, letterPrefix, kwitansiPrefix, penawaranPrefix,
+    // perjanjianPrefix, suratJalanPrefix }.
+    docNumbering: jsonb('doc_numbering'),
+    // Payment term in days. Client org = that client's term; agency org = the
+    // default term. Due date = invoice sent date + term (invoice.service).
+    paymentTermDays: integer('payment_term_days'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -136,6 +145,7 @@ export const cars = pgTable('cars', {
     category: carCategoryEnum('category').default('standard'),
     year: integer('year'),
     licensePlate: varchar('license_plate', { length: 20 }),
+    isOwned: boolean('is_owned').notNull().default(false),   // company-owned unit (Analytics)
     color: varchar('color', { length: 50 }),
     image: text('image').notNull(),
     gallery: json('gallery').$type(),
@@ -259,6 +269,9 @@ export const orders = pgTable('orders', {
     invoiceDueDate: timestamp('invoice_due_date'),                  // Due Date
     invoicePaidDate: timestamp('invoice_paid_date'),                // Tanggal Realisasi
     invoicePaymentStatus: varchar('invoice_payment_status', { length: 20 }), // Pending / Paid
+    // Link to the invoice record (source of truth). The invoice* columns above
+    // are a denormalized read copy kept in sync by invoice.service.
+    invoiceId: integer('invoice_id'),
     // Stage 2 — order claim model. claim_status: unclaimed | client_claimed | agency_claimed
     claimedByUserId: text('claimed_by_user_id'),
     claimedByAgencyId: integer('claimed_by_agency_id'),
@@ -268,6 +281,32 @@ export const orders = pgTable('orders', {
     isDemo: boolean('is_demo').notNull().default(false),
     organizationId: integer('organization_id').references(() => organizations.id, { onDelete: 'set null' }),
     createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// ─── Invoices (D.2) ─────────────────────────────────────────────────
+// One row per issued invoice; a group invoice links many order rows via
+// orders.invoice_id. invoice_number is stable across cancel & re-issue
+// (partial unique index on non-cancelled rows — see invoices_migration.sql).
+export const invoices = pgTable('invoices', {
+    id: serial('id').primaryKey(),
+    invoiceNumber: varchar('invoice_number', { length: 50 }).notNull(),
+    organizationId: integer('organization_id'),   // owning agency
+    clientOrgId: integer('client_org_id'),         // company directory record (terms)
+    companyName: varchar('company_name', { length: 255 }),
+    letterNumber: varchar('letter_number', { length: 50 }),
+    sentDate: timestamp('sent_date'),
+    dueDate: timestamp('due_date'),
+    paidDate: timestamp('paid_date'),
+    paymentTermDays: integer('payment_term_days'), // term frozen at issue time
+    totalAmount: decimal('total_amount', { precision: 15, scale: 2 }).notNull().default('0'),
+    isCancelled: boolean('is_cancelled').notNull().default(false),
+    cancelledAt: timestamp('cancelled_at'),
+    cancelReason: text('cancel_reason'),
+    replacesInvoiceId: integer('replaces_invoice_id'),
+    notes: text('notes'),
+    createdBy: text('created_by'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });

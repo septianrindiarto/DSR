@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Hide scrollbars while keeping scroll functional (used by the sidebar). */
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 @theme {
   --color-primary: #ff0008;
   --color-primary-dark: #cc0006;

@@ -43,6 +43,7 @@ const carSchema = z.object({
     category: z.enum(['economy', 'standard', 'premium', 'luxury']).optional(),
     year: z.number().int().optional().nullable(),
     licensePlate: z.string().optional().nullable(),
+    isOwned: z.boolean().optional(),
     color: z.string().optional().nullable(),
     image: z.string().min(1, 'Gambar wajib diisi'),
     gallery: z.array(z.string()).optional().nullable(),

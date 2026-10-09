@@ -8,6 +8,7 @@ import { desc, eq, isNull, isNotNull, and, sql, inArray } from 'drizzle-orm';
 import { runRekapSync, REKAP_PATH } from '../services/sync.service.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildScopeConditions } from '../middleware/scope.js';
+import { invoiceService } from '../services/invoice.service.js';
 
 const router = express.Router();
 
@@ -107,9 +108,10 @@ router.get('/orders/needs-invoice', requireAuth, async (req, res, next) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const scopeConds = buildScopeConditions(req.user, {
-      organizationId: orders.organizationId,
-      isDemo:         orders.isDemo,
-      createdBy:      orders.createdBy,
+      organizationId:    orders.organizationId,
+      isDemo:            orders.isDemo,
+      createdBy:         orders.createdBy,
+      claimedByAgencyId: orders.claimedByAgencyId,
     });
     const rows = await db
       .select({
@@ -123,7 +125,9 @@ router.get('/orders/needs-invoice', requireAuth, async (req, res, next) => {
       .leftJoin(drivers, eq(orders.driverId, drivers.id))
       .leftJoin(cars, eq(orders.carId, cars.id))
       .where(and(
-        isNull(orders.invoiceNumber),
+        // Needs an invoice = never invoiced, OR linked to an invoice that was
+        // re-issued and not sent yet (number kept, status Belum Dikirim).
+        sql`(${orders.invoiceNumber} IS NULL OR (${orders.invoiceId} IS NOT NULL AND ${orders.invoiceSentDate} IS NULL))`,
         sql`${orders.status} IN ('completed', 'active', 'confirmed')`,
         ...scopeConds
       ))
@@ -135,64 +139,73 @@ router.get('/orders/needs-invoice', requireAuth, async (req, res, next) => {
   }
 });
 
+// Order ids (from `ids`) the caller may invoice — own + claimed orders, same
+// visibility as Rekap Order.
+async function scopedOrderIds(user, ids) {
+  if (!ids.length) return [];
+  const scopeConds = buildScopeConditions(user, {
+    organizationId:    orders.organizationId,
+    isDemo:            orders.isDemo,
+    createdBy:         orders.createdBy,
+    claimedByAgencyId: orders.claimedByAgencyId,
+  });
+  const rows = await db.select({ id: orders.id }).from(orders)
+    .where(and(inArray(orders.id, ids), ...scopeConds));
+  return rows.map(r => r.id);
+}
+
+// Fallback number when the caller sends none (kept from the legacy flow).
+function fallbackInvoiceNo(id) {
+  const now = new Date();
+  return `INV-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}-${String(id).padStart(4, '0')}`;
+}
+
 // ─── PUT /api/sync/orders/:id/invoice — record that an invoice was generated ─
+// Creates/updates the invoice record (invoices table) and links the order.
+// Due date is computed from the client's payment term — any due date sent by
+// the client is ignored.
 router.put('/orders/:id/invoice', requireAuth, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { invoiceNumber, invoiceLetterNumber, invoiceSentDate, invoiceDueDate, invoicePaymentStatus } = req.body || {};
-    const now2 = new Date();
-    const datePfx2 = `${now2.getFullYear()}${String(now2.getMonth() + 1).padStart(2, '0')}`;
-    const patch = { updatedAt: now2 };
-    // Always set invoiceNumber so the order exits the "needs invoice" filter
-    patch.invoiceNumber = invoiceNumber || `INV-${datePfx2}-${String(id).padStart(4, '0')}`;
-    if (invoiceLetterNumber) patch.invoiceLetterNumber = invoiceLetterNumber;
-    if (invoiceSentDate) patch.invoiceSentDate = new Date(invoiceSentDate);
-    if (invoiceDueDate) patch.invoiceDueDate = new Date(invoiceDueDate);
-    if (invoicePaymentStatus) patch.invoicePaymentStatus = invoicePaymentStatus;
-    const scopeConds = buildScopeConditions(req.user, {
-      organizationId: orders.organizationId,
-      isDemo:         orders.isDemo,
-      createdBy:      orders.createdBy,
+    const { invoiceNumber, invoiceLetterNumber, invoiceSentDate } = req.body || {};
+    const allowedIds = await scopedOrderIds(req.user, [id]);
+    if (!allowedIds.length) return res.status(404).json({ error: 'Order tidak ditemukan.' });
+    const results = await invoiceService.issueForOrders({
+      items: [{ id, invoiceNumber: invoiceNumber || fallbackInvoiceNo(id) }],
+      sentDate: invoiceSentDate || null,
+      letterNumber: invoiceLetterNumber || null,
+      user: req.user,
+      allowedIds,
     });
-    await db.update(orders).set(patch).where(and(eq(orders.id, id), ...scopeConds));
-    res.json({ ok: true });
+    res.json({ ok: true, results });
   } catch (err) {
     next(err);
   }
 });
 
 // ─── POST /api/sync/orders/bulk-invoice — mark multiple orders as invoiced ───
+// Rows sharing an invoiceNumber become ONE invoice (group invoice).
 router.post('/orders/bulk-invoice', requireAuth, async (req, res, next) => {
   try {
-    const { ids, invoiceSentDate, invoicePaymentStatus } = req.body || {};
+    const { ids, invoiceSentDate, invoiceLetterNumber } = req.body || {};
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'ids diperlukan.' });
     }
-    const patch = { updatedAt: new Date() };
-    if (invoiceSentDate) patch.invoiceSentDate = new Date(invoiceSentDate);
-    patch.invoicePaymentStatus = invoicePaymentStatus || 'Pending';
-
-    const scopeConds = buildScopeConditions(req.user, {
-      organizationId: orders.organizationId,
-      isDemo:         orders.isDemo,
-      createdBy:      orders.createdBy,
-    });
-
-    const now = new Date();
-    const datePfx = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-    const results = [];
-    for (let i = 0; i < ids.length; i++) {
-      const item = ids[i];
+    const items = ids.map((item) => {
       const id = typeof item === 'object' ? Number(item.id) : Number(item);
-      const invNo = (typeof item === 'object' ? item.invoiceNumber : null)
-        || `INV-${datePfx}-${String(id).padStart(4, '0')}`;
-      const rowPatch = { ...patch, invoiceNumber: invNo };
-      // Scope guard: only update orders the current user owns
-      await db.update(orders).set(rowPatch).where(and(eq(orders.id, id), ...scopeConds));
-      results.push({ id, invoiceNumber: invNo });
-    }
-    res.json({ ok: true, updated: results.length, results });
+      const invoiceNumber = (typeof item === 'object' ? item.invoiceNumber : null) || fallbackInvoiceNo(id);
+      return { id, invoiceNumber };
+    });
+    const allowedIds = await scopedOrderIds(req.user, items.map(i => i.id));
+    const results = await invoiceService.issueForOrders({
+      items,
+      sentDate: invoiceSentDate || null,
+      letterNumber: invoiceLetterNumber || null,
+      user: req.user,
+      allowedIds,
+    });
+    const updated = results.reduce((n, r) => n + r.orderIds.length, 0);
+    res.json({ ok: true, updated, results });
   } catch (err) {
     next(err);
   }

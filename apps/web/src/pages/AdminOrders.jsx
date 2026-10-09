@@ -9,6 +9,8 @@ import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs, formatPrice, formatDate, formatDateRange } from "../lib/dataFormats";
+import { invoiceStatusOf, INVOICE_STATUS_CLASS, INVOICE_STATUS_KEY } from "../lib/invoiceStatus";
+import BookingEditModal from "../components/BookingEditModal";
 
 const statusColors = {
   pending: "bg-amber-100 text-amber-700",
@@ -292,6 +294,96 @@ function downloadFile(filename, content, mime = "text/csv;charset=utf-8") {
   URL.revokeObjectURL(url);
 }
 
+// ─── Rekap.xlsx-format export helpers ────────────────────────────────────────
+// Reproduce the source spreadsheet's column layout + value patterns exactly.
+const REKAP_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+const _pad2 = (n) => String(n).padStart(2, "0");
+// Single day → "08/01/2026"; same-month range → "07 s/d 08 Januari 2026";
+// cross-month range → "1 Desember 2025 s/d 1 Januari 2026".
+function rekapUsageDate(startISO, endISO) {
+  const s = startISO ? new Date(startISO) : null;
+  if (!s || isNaN(s.getTime())) return "";
+  const e = endISO ? new Date(endISO) : null;
+  if (!e || isNaN(e.getTime()) || s.getTime() === e.getTime()) {
+    return `${_pad2(s.getDate())}/${_pad2(s.getMonth() + 1)}/${s.getFullYear()}`;
+  }
+  if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+    return `${_pad2(s.getDate())} s/d ${_pad2(e.getDate())} ${REKAP_MONTHS[e.getMonth()]} ${e.getFullYear()}`;
+  }
+  const full = (d) => `${d.getDate()} ${REKAP_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+  return `${full(s)} s/d ${full(e)}`;
+}
+// "Toyota Avanza" → "Avanza" (drop the brand so it reads like the source).
+function rekapModel(mobil) {
+  const m = String(mobil || "").trim();
+  if (!m) return "";
+  const parts = m.split(/\s+/);
+  return parts.length > 1 ? parts.slice(1).join(" ") : m;
+}
+const rekapRp = (n) => `Rp${Number(n || 0).toLocaleString("id-ID")}`;   // Rp1.630.000
+const rekapNum = (n) => Number(n || 0).toLocaleString("id-ID");          // 850.000
+function rekapStatus(s) {
+  const map = { completed: "Done", cancelled: "Cancelled", active: "On Going", confirmed: "Confirmed", pending: "Pending" };
+  const k = String(s || "").toLowerCase();
+  return map[k] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+}
+// Single date → "08/01/2026", or "-" when empty.
+function rekapDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "-";
+  return `${_pad2(d.getDate())}/${_pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+}
+// Build the Rekap-format export rows (shared by agency Export + client download).
+// Collapses identical units within a booking into one line with a Jumlah count.
+// `includeKontrak` = false for client downloads (Kontrak Harga is hidden from clients).
+function buildRekapExportRows(data, { includeKontrak = true } = {}) {
+  const groups = new Map();
+  const order = [];
+  for (const r of data || []) {
+    const key = `${r.kodeTransaksi}||${rekapModel(r.mobil)}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(r);
+  }
+  return order.map((key, idx) => {
+    const g = groups.get(key);
+    const r = g[0];
+    const sum = (f) => g.reduce((a, x) => a + Number(x[f] || 0), 0);
+    const distinct = (f) => [...new Set(g.map(x => String(x[f] ?? "").trim()).filter(Boolean))].join(", ");
+    const inap = sum("inap"), lembur = sum("lembur");
+    return {
+      "No": idx + 1,
+      "Kode Transaksi": r.kodeTransaksi || "",
+      "Nama": r.nama || "",
+      "Company Name": r.companyName || "Private",
+      "Paket": r.paket || "",
+      "Tgl Pemakaian": rekapUsageDate(r.tglPemakaian, r.tglSelesai),
+      "Jumlah": g.length,
+      "Mobil": rekapModel(r.mobil),
+      "Plat": distinct("plat"),
+      "Driver": distinct("driver"),
+      // Sum across the grouped units (Jumlah) → e.g. 2 × 815.000 = Rp1.630.000.
+      ...(includeKontrak ? { "Kontrak Harga": rekapRp(sum("kontrakHarga")) } : {}),
+      "Tujuan": distinct("tujuan"),
+      "Inap": inap > 0 ? inap : "-",
+      "Lembur": lembur > 0 ? lembur : "-",
+      "Status": rekapStatus(r.status),
+      "No. Invoice": r.invoiceNumber || "-",
+      "No. Surat": r.invoiceLetterNumber || "-",
+      "Tgl Kirim Invoice": rekapDate(r.invoiceSentDate),
+      "Due Date": rekapDate(r.invoiceDueDate),
+      "Tgl Realisasi": rekapDate(r.invoicePaidDate),
+      // Derived status (backend export already derives it; recompute so the
+      // client download path, which may carry raw rows, matches).
+      "Status Invoice": invoiceStatusOf({
+        invoiceSentDate: r.invoiceSentDate, invoiceDueDate: r.invoiceDueDate,
+        invoicePaidDate: r.invoicePaidDate, invoicePaymentStatus: r.invoicePaymentStatus, status: r.status,
+      }) || "-",
+    };
+  });
+}
+
 export default function AdminOrders() {
   const { t } = useLanguage();
   const toast = useToast();
@@ -320,7 +412,9 @@ export default function AdminOrders() {
   const [stats, setStats] = useState(() => apiCache.get("orders:stats") || null);
   const [loading, setLoading] = useState(() => !apiCache.has(cacheKey));
   const [selectedOrder, setSelectedOrder] = useState(null);
-  const [editOrder, setEditOrder] = useState(null);
+  // Rows opened in the unified ✏️ form: [order] for a single/child row, or
+  // all rows of a booking for a group header. null = closed.
+  const [editRows, setEditRows] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   // Drivers + cars are only needed when a modal opens — load them lazily.
   const [drivers, setDrivers] = useState(() => apiCache.get("drivers:available") || []);
@@ -341,12 +435,8 @@ export default function AdminOrders() {
     if (next.has(code)) next.delete(code); else next.add(code);
     return next;
   });
-  // Tier 2: per-car driver assignment + whole-booking cancel target the rows
-  // of one booking group. Each holds the group object (or null when closed).
-  // Multi-car booking row controls: one "Action" form (car + driver + price),
-  // plus cancel and delete for the whole booking.
-  const [manageBookingTarget, setManageBookingTarget] = useState(null);
-  const [cancelBookingTarget, setCancelBookingTarget] = useState(null);
+  // Whole-booking delete target (group object or null). Editing and cancelling
+  // a booking now live inside the unified ✏️ form (BookingEditModal).
   const [deleteBookingTarget, setDeleteBookingTarget] = useState(null);
 
   // Re-fetch only on filter/sort changes — not on every keystroke
@@ -474,32 +564,12 @@ export default function AdminOrders() {
     } catch (error) { toast.error(error.message); }
   }
 
-  async function handleEditSave(payload) {
-    try {
-      await api.orders.update(editOrder.id, payload);
-      setEditOrder(null);
-      invalidateOrders();
-      loadOrders();
-    } catch (error) { toast.error(error.message); }
-  }
-
   async function handleCreateSave(payload) {
     try {
       await api.orders.create(payload);
       setCreatingOrder(false);
       invalidateOrders();
       loadOrders();
-    } catch (error) { toast.error(error.message); }
-  }
-
-  // Tier 2: save the combined "Action" form — car + driver + price per row.
-  async function handleManageBookingSave(items) {
-    try {
-      const res = await api.orders.updateBookingItems(items);
-      setManageBookingTarget(null);
-      invalidateOrders();
-      loadOrders();
-      toast.success(`Booking diperbarui (${res?.updated ?? items.length} kendaraan).`);
     } catch (error) { toast.error(error.message); }
   }
 
@@ -512,18 +582,6 @@ export default function AdminOrders() {
       invalidateOrders();
       loadOrders();
       toast.success(`Booking ${deleteBookingTarget.orderNumber} dihapus (${res?.deleted ?? 0} kendaraan).`);
-    } catch (error) { toast.error(error.message); }
-  }
-
-  // Tier 2: cancel an entire booking (all cars sharing the order code).
-  async function handleCancelBooking() {
-    if (!cancelBookingTarget) return;
-    try {
-      const res = await api.orders.cancelBooking(cancelBookingTarget.orderNumber);
-      setCancelBookingTarget(null);
-      invalidateOrders();
-      loadOrders();
-      toast.success(`Booking ${cancelBookingTarget.orderNumber} dibatalkan (${res?.cancelled ?? 0} kendaraan).`);
     } catch (error) { toast.error(error.message); }
   }
 
@@ -586,11 +644,10 @@ export default function AdminOrders() {
       case "invoiceDueDate": return <span className="text-slate-600 text-xs">{formatDate(order.invoiceDueDate)}</span>;
       case "invoicePaidDate": return <span className="text-slate-600 text-xs">{formatDate(order.invoicePaidDate)}</span>;
       case "invoicePaymentStatus": {
-        const s = (order.invoicePaymentStatus || "").toLowerCase();
-        const cls = s === "paid" ? "bg-emerald-100 text-emerald-700"
-          : s === "pending" ? "bg-amber-100 text-amber-700"
-          : "bg-slate-100 text-slate-600";
-        return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>{order.invoicePaymentStatus || "-"}</span>;
+        // Derived: Belum Dikirim / Pending / Overdue / Paid.
+        const st = invoiceStatusOf(order);
+        if (!st) return <span className="text-slate-400 text-xs">-</span>;
+        return <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${INVOICE_STATUS_CLASS[st] || ""}`}>{t(INVOICE_STATUS_KEY[st])}</span>;
       }
       default: return null;
     }
@@ -677,7 +734,7 @@ export default function AdminOrders() {
           <button onClick={() => { ensureDriversAndCars(); setSelectedOrder(order); }} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer" title={t("details")}>
             <span className="material-symbols-outlined text-[18px]">visibility</span>
           </button>
-          <button onClick={() => { ensureDriversAndCars(); setEditOrder(order); }} className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer" title={t("edit")}>
+          <button onClick={() => { ensureDriversAndCars(); setEditRows([order]); }} className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer" title={t("edit")}>
             <span className="material-symbols-outlined text-[18px]">edit</span>
           </button>
           <button onClick={() => setDeleteTarget(order)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer" title={t("delete")}>
@@ -847,27 +904,7 @@ export default function AdminOrders() {
       // Canonical keys (kodeTransaksi, nama, \u2026) flow into every export
       // format. ISO dates make spreadsheet imports/exports unambiguous; the
       // importer below also accepts dd/mm/yyyy from hand-edited files.
-      const rows = data.map((r, idx) => ({
-        no: idx + 1,
-        kodeTransaksi: r.kodeTransaksi,
-        nama: r.nama,
-        companyName: r.companyName,
-        paket: r.paket,
-        // Backend /data/export returns dates under tglPemakaian / tglSelesai
-        // (fall back to pickupDate/returnDate just in case).
-        pickupDate: (r.tglPemakaian || r.pickupDate) ? new Date(r.tglPemakaian || r.pickupDate).toISOString().slice(0, 10) : "",
-        returnDate: (r.tglSelesai || r.returnDate) ? new Date(r.tglSelesai || r.returnDate).toISOString().slice(0, 10) : "",
-        jumlahHari: r.jumlahHari,
-        mobil: r.mobil,
-        plat: r.plat,
-        driver: r.driver,
-        kontrakHarga: r.kontrakHarga,
-        tujuan: r.tujuan,
-        inap: r.inap,
-        lembur: r.lembur,
-        status: r.status,
-        bailout: r.bailout,
-      }));
+      const rows = buildRekapExportRows(data);
       await exportAs(rows, format, "rekap-order");
     } catch (error) { toast.error("Export gagal: " + error.message); }
   }
@@ -950,12 +987,14 @@ export default function AdminOrders() {
   async function handleClientDownload() {
     try {
       const data = await api.orders.exportData();
-      let rows = Array.isArray(data) ? data : [];
+      let raw = Array.isArray(data) ? data : [];
       if (statusFilter && statusFilter !== "all") {
-        rows = rows.filter(r => String(r.status || "").toLowerCase() === statusFilter);
+        raw = raw.filter(r => String(r.status || "").toLowerCase() === statusFilter);
       }
       const q = search.trim().toLowerCase();
-      if (q) rows = rows.filter(r => JSON.stringify(r).toLowerCase().includes(q));
+      if (q) raw = raw.filter(r => JSON.stringify(r).toLowerCase().includes(q));
+      // Same Rekap-format columns as the agency Export.
+      const rows = buildRekapExportRows(raw, { includeKontrak: false });
       if (rows.length === 0) { toast.error("Tidak ada data untuk diunduh."); return; }
       const headers = Object.keys(rows[0]);
       const cell = (v) => {
@@ -1060,7 +1099,7 @@ export default function AdminOrders() {
             <p className="text-xs text-red-600 mt-0.5">{loadError}</p>
             <p className="text-xs text-red-500 mt-1">
               Kemungkinan besar database belum memiliki kolom terbaru. Jalankan perintah berikut di terminal:{" "}
-              <code className="bg-red-100 px-1 rounded font-mono">cd apps/api &amp;&amp; npm run migrate -- orders_full</code>
+              <code className="bg-red-100 px-1 rounded font-mono">cd apps/api &amp;&amp; npm run migrate</code>
             </p>
           </div>
           <button onClick={() => { setLoadError(null); loadOrders(); }} className="text-red-400 hover:text-red-600 cursor-pointer" title="Coba lagi">
@@ -1194,26 +1233,27 @@ export default function AdminOrders() {
                       })}
                       {!isClient && (
                       <td className="px-3 py-3 text-center align-middle">
+                        {/* Same three buttons as every other row. 👁 expands the
+                            vehicle list; ✏️ opens the unified form with ALL vehicles. */}
                         <div className="flex items-center justify-center gap-1">
                           <button
-                            onClick={(e) => { e.stopPropagation(); ensureDriversAndCars(); setManageBookingTarget(group); }}
-                            className="px-2 py-1 rounded-lg hover:bg-primary/10 text-primary cursor-pointer inline-flex items-center gap-1 text-xs font-medium"
-                            title="Atur unit, driver, dan harga"
+                            onClick={(e) => { e.stopPropagation(); toggleGroup(group.orderNumber); }}
+                            className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer"
+                            title={t("viewDetails")}
                           >
-                            <span className="material-symbols-outlined text-[18px]">tune</span>
-                            Action
+                            <span className="material-symbols-outlined text-[18px]">visibility</span>
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); setCancelBookingTarget(group); }}
+                            onClick={(e) => { e.stopPropagation(); ensureDriversAndCars(); setEditRows(group.rows); }}
                             className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer"
-                            title="Batalkan seluruh booking"
+                            title={t("edit")}
                           >
-                            <span className="material-symbols-outlined text-[18px]">block</span>
+                            <span className="material-symbols-outlined text-[18px]">edit</span>
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); setDeleteBookingTarget(group); }}
                             className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer"
-                            title="Hapus seluruh booking"
+                            title={t("delete")}
                           >
                             <span className="material-symbols-outlined text-[18px]">delete</span>
                           </button>
@@ -1262,14 +1302,14 @@ export default function AdminOrders() {
         />
       )}
 
-      {/* Edit Modal */}
-      {editOrder && (
-        <EditModal
-          order={editOrder}
+      {/* Unified edit form — single order, child row, or whole booking */}
+      {editRows && (
+        <BookingEditModal
+          rows={editRows}
           cars={cars}
           drivers={drivers}
-          onClose={() => setEditOrder(null)}
-          onSave={handleEditSave}
+          onClose={() => setEditRows(null)}
+          onSaved={() => { setEditRows(null); invalidateOrders(); loadOrders(); }}
           t={t}
         />
       )}
@@ -1284,17 +1324,6 @@ export default function AdminOrders() {
           onClose={() => setCreatingOrder(false)}
           onSave={handleCreateSave}
           t={t}
-        />
-      )}
-
-      {/* Tier 2: Combined "Action" form — set car, driver, price per vehicle */}
-      {manageBookingTarget && (
-        <ManageBookingModal
-          group={manageBookingTarget}
-          cars={cars}
-          drivers={drivers}
-          onClose={() => setManageBookingTarget(null)}
-          onSave={handleManageBookingSave}
         />
       )}
 
@@ -1326,33 +1355,6 @@ export default function AdminOrders() {
         </div>
       )}
 
-      {/* Tier 2: Cancel whole booking confirm */}
-      {cancelBookingTarget && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setCancelBookingTarget(null)}>
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
-            <div className="p-5">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-red-600">block</span>
-                </div>
-                <h3 className="text-lg font-bold text-slate-900">Batalkan Booking</h3>
-              </div>
-              <p className="text-sm text-slate-600 mb-4">
-                Batalkan seluruh booking <span className="font-mono font-bold text-primary">{cancelBookingTarget.orderNumber}</span>
-                {" "}({cancelBookingTarget.rows.length} kendaraan)? Baris yang sudah selesai tidak terpengaruh.
-              </p>
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => setCancelBookingTarget(null)} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
-                  Kembali
-                </button>
-                <button onClick={handleCancelBooking} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 cursor-pointer">
-                  Batalkan Semua
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Delete Confirm Modal */}
       {deleteTarget && (
@@ -1487,153 +1489,6 @@ function DetailModal({ order, drivers, onClose, onStatusChange, onAssignDriver, 
 // Picking a unit auto-fills the price from the unit's daily rate × rental days
 // when the price field is still empty/zero, but never overwrites a price the
 // admin has already typed.
-function ManageBookingModal({ group, cars = [], drivers = [], onClose, onSave }) {
-  const totalDays = Number(group.rows[0]?.totalDays || 1) || 1;
-  const carPrice = (carId) => {
-    const c = cars.find(x => String(x.id) === String(carId));
-    return c ? Number(c.price || 0) : 0;
-  };
-
-  // Only offer usable units/drivers: cars not in maintenance, drivers that are
-  // active. The currently-assigned unit/driver of a row is always kept in its
-  // own dropdown (even if it later went to maintenance / inactive) so an
-  // existing assignment never disappears from view.
-  const selectableCars = cars.filter(c => c.status !== "maintenance");
-  const selectableDrivers = drivers.filter(d => !d.status || d.status === "active");
-  const carOptionsFor = (o) => {
-    const cur = o.car;
-    return (cur && !selectableCars.some(c => c.id === cur.id)) ? [cur, ...selectableCars] : selectableCars;
-  };
-  const driverOptionsFor = (o) => {
-    const cur = o.driver;
-    return (cur && !selectableDrivers.some(d => d.id === cur.id)) ? [cur, ...selectableDrivers] : selectableDrivers;
-  };
-
-  const [rows, setRows] = useState(() =>
-    group.rows.map(o => ({
-      orderId: o.id,
-      carId: o.carId || "",
-      driverId: o.driverId || "",
-      totalPrice: o.totalPrice != null ? String(Number(o.totalPrice) || 0) : "",
-    }))
-  );
-
-  const setRow = (orderId, patch) =>
-    setRows(prev => prev.map(r => r.orderId === orderId ? { ...r, ...patch } : r));
-
-  const onCarChange = (orderId, carId) => {
-    setRows(prev => prev.map(r => {
-      if (r.orderId !== orderId) return r;
-      const next = { ...r, carId };
-      // Auto-fill price only when it's currently blank/zero.
-      const cur = Number(r.totalPrice || 0);
-      if (carId && !(cur > 0)) {
-        next.totalPrice = String(carPrice(carId) * totalDays);
-      }
-      return next;
-    }));
-  };
-
-  // Requested category parsed from the row notes, to guide unit selection.
-  const requestedCategory = (notes) => {
-    const m = /Permintaan Kendaraan:\s*([^\n(]+)/i.exec(notes || "");
-    return m ? m[1].trim() : "";
-  };
-
-  function handleSave() {
-    onSave(rows.map(r => ({
-      orderId: r.orderId,
-      carId: r.carId ? Number(r.carId) : null,
-      driverId: r.driverId ? Number(r.driverId) : null,
-      totalPrice: r.totalPrice === "" ? null : Number(r.totalPrice) || 0,
-    })));
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-5 border-b border-slate-100">
-          <div>
-            <h2 className="text-lg font-bold text-slate-900">
-              Atur Booking — <span className="font-mono text-primary">{group.orderNumber}</span>
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">{group.rows.length} kendaraan · {totalDays} hari</p>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer">
-            <span className="material-symbols-outlined">close</span>
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {group.rows.map((o, i) => {
-            const r = rows.find(x => x.orderId === o.id);
-            const cat = requestedCategory(o.notes);
-            return (
-              <div key={o.id} className="border border-slate-200 rounded-lg p-3 bg-slate-50/50">
-                <p className="text-xs font-bold text-slate-600 mb-2">
-                  Kendaraan #{i + 1}
-                  {cat && <span className="ml-2 font-normal text-slate-400">Permintaan: {cat}</span>}
-                  {o.destination && <span className="ml-2 font-normal text-slate-400">· {o.destination}</span>}
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Unit / Mobil</label>
-                    <select
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm cursor-pointer"
-                      value={r?.carId || ""}
-                      onChange={e => onCarChange(o.id, e.target.value)}
-                    >
-                      <option value="">-- Tanpa unit --</option>
-                      {carOptionsFor(o).map(c => (
-                        <option key={c.id} value={c.id}>
-                          {`${c.brand || ""} ${c.name || ""}`.trim()}{c.licensePlate ? ` (${c.licensePlate})` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Driver</label>
-                    <select
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm cursor-pointer"
-                      value={r?.driverId || ""}
-                      onChange={e => setRow(o.id, { driverId: e.target.value })}
-                    >
-                      <option value="">-- Tanpa driver --</option>
-                      {driverOptionsFor(o).map(d => (
-                        <option key={d.id} value={d.id}>{d.name}{d.phone ? ` (${d.phone})` : ""}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Harga (Rp)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                      value={r?.totalPrice ?? ""}
-                      onChange={e => setRow(o.id, { totalPrice: e.target.value })}
-                      placeholder="0"
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="flex gap-2 justify-end p-5 border-t border-slate-100">
-          <button onClick={onClose} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
-            Batal
-          </button>
-          <button onClick={handleSave} className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">
-            Simpan
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Edit / Create Modal ────────────────────────────────────────────
 function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onSave, t }) {
   const toast = useToast();
@@ -1647,6 +1502,7 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
     user?.accountType === 'client' ||
     user?.role === 'client' || user?.role === 'client_admin';
   const [companies, setCompanies] = useState([]);
+  const [saving, setSaving] = useState(false); // guards against double-submit
 
   // Fetch company list once on mount. Scope depends on caller's accountType:
   //   • Client → only their own org's company name (single option)
@@ -1661,10 +1517,24 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
         .catch((err) => console.error("Failed to load org for company dropdown:", err));
       return;
     }
-    api.companies.list("limit=500").then(res => {
-      const rows = Array.isArray(res) ? res : (res?.data || []);
-      setCompanies(rows);
-    }).catch(() => {});
+    // Agency/superadmin: suggestions = per-user booking history (all for a
+    // superadmin) + registered client orgs, merged & de-duped. The field stays
+    // free-text; this only powers the datalist.
+    Promise.allSettled([
+      api.orders.companySuggestions(),
+      api.companies.list("limit=500"),
+    ]).then(([hist, regs]) => {
+      const names = new Set();
+      const h = hist.status === "fulfilled" ? (hist.value?.data || hist.value || []) : [];
+      h.forEach((n) => n && names.add(String(n).trim()));
+      const r = regs.status === "fulfilled"
+        ? (Array.isArray(regs.value) ? regs.value : (regs.value?.data || [])) : [];
+      r.forEach((c) => c?.name && names.add(String(c.name).trim()));
+      setCompanies(
+        [...names].filter(Boolean).sort((a, b) => a.localeCompare(b))
+          .map((name, i) => ({ id: `s${i}`, name })),
+      );
+    });
   }, [isClient, user?.organizationId]);
 
   const [form, setForm] = useState({
@@ -1702,8 +1572,9 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.pickupDate, form.returnDate]);
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
+    if (saving) return; // already submitting — ignore repeat clicks/enter
     const payload = { ...form };
     payload.totalDays = Number(payload.totalDays);
     payload.overnightNights = Number(payload.overnightNights);
@@ -1719,7 +1590,12 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
       if (!payload.carId) { toast.error("Mobil wajib dipilih"); return; }
       if (!payload.customerName) { toast.error("Nama wajib diisi"); return; }
     }
-    onSave(payload);
+    setSaving(true);
+    try {
+      await onSave(payload); // parent closes the modal on success
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -1852,12 +1728,14 @@ function EditModal({ order, isNew = false, cars = [], drivers = [], onClose, onS
           <Field label={t("description")}>
             <textarea className="input" rows="2" value={form.notes} onChange={e => set("notes", e.target.value)} />
           </Field>
+
           <div className="flex gap-2 justify-end pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg text-sm hover:bg-slate-50 cursor-pointer">
               {t("cancel")}
             </button>
-            <button type="submit" className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">
-              {isNew ? t("create") : t("save")}
+            <button type="submit" disabled={saving} className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer inline-flex items-center gap-2">
+              {saving && <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+              {saving ? "Menyimpan…" : (isNew ? t("create") : t("save"))}
             </button>
           </div>
         </form>

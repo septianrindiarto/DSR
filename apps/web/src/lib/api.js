@@ -148,7 +148,12 @@ async function request(endpoint, options = {}) {
             } catch (_) { /* SSR / Node guard */ }
         }
 
-        throw new Error(msg);
+        // Keep status + body on the error so callers can read structured
+        // details (e.g. schedule conflicts on PUT /api/orders/booking-update).
+        const e = new Error(msg);
+        e.status = response.status;
+        e.body = errBody;
+        throw e;
     }
 
     return response.json();
@@ -193,10 +198,14 @@ export const api = {
         assignCars: (assignments) => api.put('/api/orders/assign-cars', { assignments }),
         // Tier 2 multi-vehicle: combined per-row update (car + driver + price).
         updateBookingItems: (items) => api.put('/api/orders/booking-items', { items }),
+        // Unified ✏️ edit form: { customer?, items: [...], force? } — single order or whole booking.
+        updateBooking: (data) => api.put('/api/orders/booking-update', data),
         // Tier 2 multi-vehicle: cancel an entire booking by its order code.
         cancelBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/cancel`, {}),
         // Tier 2 multi-vehicle: delete an entire booking by its order code.
         removeBooking: (orderNumber) => api.delete(`/api/orders/booking/${encodeURIComponent(orderNumber)}`),
+        // Company-name suggestions for the booking form (per-user history).
+        companySuggestions: () => api.get('/api/orders/company-suggestions'),
         // Stage 2: claim / release an entire booking; list claimable bookings.
         claimable: () => api.get('/api/orders/claimable'),
         claimBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/claim`, {}),
@@ -400,6 +409,27 @@ export const api = {
         removeLink: (id) => api.delete(`/api/orgs/links/${id}`),
         affiliateCode: () => api.post('/api/orgs/affiliate-code', {}),
         agencyCode: () => api.post('/api/orgs/agency-code', {}),
+    },
+    // Superadmin: platform-wide organization & relationship management.
+    orgsAdmin: {
+        list: () => api.get('/api/orgs/all'),
+        create: (data) => api.post('/api/orgs/admin', data),
+        update: (id, data) => api.put(`/api/orgs/${id}/admin`, data),
+        links: () => api.get('/api/orgs/all-links'),
+        addLink: (clientOrgId, agencyOrgId) => api.post('/api/orgs/all-links', { clientOrgId, agencyOrgId }),
+        removeLink: (id) => api.delete(`/api/orgs/all-links/${id}`),
+    },
+
+    // Invoices (D.2) — timeline (tgl kirim / realisasi), re-issue, payment terms.
+    // Issuing still happens via api.sync.markInvoiceGenerated / bulkMark… (Dokumen).
+    invoices: {
+        get: (id) => api.get(`/api/invoices/${id}`),
+        byOrder: (orderId) => api.get(`/api/invoices/by-order/${orderId}`),
+        update: (id, data) => api.put(`/api/invoices/${id}`, data),
+        reissue: (id, reason) => api.post(`/api/invoices/${id}/reissue`, { reason: reason || null }),
+        terms: () => api.get('/api/invoices/terms'),
+        setDefaultTerm: (days) => api.put('/api/invoices/terms/default', { days }),
+        setCompanyTerm: (orgId, days) => api.put(`/api/invoices/terms/company/${orgId}`, { days }),
     },
 
     // Access Requests (Phase 3)

@@ -6,6 +6,9 @@ import { driverService } from '../services/driver.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
 import { notifyOrderCreated, notifyOrderClaimed } from '../services/telegram.service.js';
 import { relationshipService } from '../services/relationship.service.js';
+import { reserveIdempotency, recordIdempotency, releaseIdempotency } from '../services/idempotency.service.js';
+import { deriveInvoiceStatus } from '../services/invoice.service.js';
+import { bookingEditService } from '../services/booking-edit.service.js';
 import { requireAuth, requireAdmin, requireRole, optionalAuth } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { activityLogger } from '../middleware/logger.js';
@@ -83,6 +86,7 @@ const publicOrderSchema = z.object({
 // `vehicles`) are wrapped into a 1-element array transparently so this
 // handler has a single code path.
 router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, res, next) => {
+    let idemSig = null; // set once we know the booking identity; released on error
     try {
         const {
             fullName, whatsapp, customerType, companyName,
@@ -174,6 +178,33 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
         const end = new Date(returnDate);
         const totalDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
         if (totalDays <= 0) return res.status(400).json({ error: 'Tanggal tidak valid' });
+
+        // Idempotency: collapse a TRULY identical booking submitted within 30s
+        // from any entry point (double-click, two tabs, retry). The signature
+        // covers the whole request — customer, dates, and every requested
+        // vehicle — so any changed field is treated as a new order.
+        idemSig = JSON.stringify({
+            c: customer.id,
+            s: start.toISOString(), e: end.toISOString(),
+            n: (notes || '').trim().toLowerCase(),
+            v: rawVehicles.map(v => ({
+                car: v.carId || null,
+                cat: (v.carCategoryRequested || '').trim().toLowerCase() || null,
+                nt: (v.carCategoryNote || '').trim().toLowerCase() || null,
+                q: Number(v.quantity) || 1,
+                p: (v.package || '').trim().toLowerCase() || null,
+                d: String(v.destination ?? destination ?? '').trim().toLowerCase(),
+                pu: String(v.pickupLocation ?? pickupLocation ?? '').trim().toLowerCase(),
+            })),
+        });
+        const idemHit = reserveIdempotency(idemSig);
+        if (idemHit) {
+            return res.status(200).json({
+                success: true, duplicate: true,
+                message: 'Pesanan identik baru saja dikirim — tidak dibuat ganda.',
+                order: { orderNumber: idemHit.orderNumber, vehicleCount: 1 },
+            });
+        }
 
         // ONE shared orderNumber for the whole booking. Tier 2 core: every
         // vehicle row in this booking writes the same code. The DB UNIQUE
@@ -267,6 +298,8 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
 
         const grandTotal = createdOrders.reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
 
+        recordIdempotency(idemSig, sharedOrderNumber); // link the code to the signature
+
         res.status(201).json({
             success: true,
             message: vehicles.length === 1
@@ -285,7 +318,10 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
                 package: o.package,
             })),
         });
-    } catch (error) { next(error); }
+    } catch (error) {
+        if (idemSig) releaseIdempotency(idemSig); // don't block a retry of a failed submit
+        next(error);
+    }
 });
 
 // List orders — accessible to ALL authenticated roles. Data scoping inside
@@ -319,6 +355,15 @@ router.get('/claimable', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
+// Company-name suggestions for the booking form (per-user history; all for
+// superadmin). Registered BEFORE `/:id`. The field itself is free-text.
+router.get('/company-suggestions', requireAuth, requireAdmin, async (req, res, next) => {
+    try {
+        const list = await orderService.companySuggestions(req.user);
+        res.json({ data: list });
+    } catch (error) { next(error); }
+});
+
 // ─── Export orders data as flattened JSON ─────────────────────────────
 router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => {
     try {
@@ -343,6 +388,18 @@ router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => 
             status: o.status,
             bailout: Number(o.bailout || 0),
             notes: o.notes || '',
+            // Invoice tracking (per booking).
+            invoiceNumber: o.invoiceNumber || '',
+            invoiceLetterNumber: o.invoiceLetterNumber || '',
+            invoiceSentDate: o.invoiceSentDate ? new Date(o.invoiceSentDate).toISOString() : '',
+            invoiceDueDate: o.invoiceDueDate ? new Date(o.invoiceDueDate).toISOString() : '',
+            invoicePaidDate: o.invoicePaidDate ? new Date(o.invoicePaidDate).toISOString() : '',
+            // Derived: Belum Dikirim / Pending / Overdue / Paid (see invoice.service).
+            invoicePaymentStatus: deriveInvoiceStatus({
+                sentDate: o.invoiceSentDate, dueDate: o.invoiceDueDate,
+                paidDate: o.invoicePaidDate, orderStatus: o.status,
+                paymentStatus: o.invoicePaymentStatus,
+            }) || '',
         }));
         res.setHeader('Content-Disposition', `attachment; filename=rekap-order-${Date.now()}.json`);
         res.json(exportData);
@@ -585,6 +642,7 @@ const createOrderSchema = z.object({
 });
 
 router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activityLogger('create', 'order'), async (req, res, next) => {
+    let idemSig = null; // booking identity; released on error
     try {
         const body = req.body;
 
@@ -681,6 +739,25 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             return res.status(400).json({ error: 'Maksimal 10 kendaraan per pemesanan.' });
         }
 
+        // Idempotency: collapse a TRULY identical booking submitted within 30s
+        // from any entry point. Signature covers customer, dates, status and
+        // every vehicle (unit/driver/price/route) — any change ⇒ a new order.
+        idemSig = JSON.stringify({
+            c: customer.id,
+            s: pickupDate.toISOString(), e: returnDate.toISOString(),
+            st: body.status || 'pending',
+            n: (body.notes || '').trim().toLowerCase(),
+            v: vehicles.map(v => ({
+                car: v.carId || null, drv: v.driverId || null,
+                p: (v.package || '').trim().toLowerCase() || null,
+                pr: String(v.totalPrice ?? ''),
+                d: String((v.destination ?? body.destination) ?? '').trim().toLowerCase(),
+                pu: String((v.pickupLocation ?? body.pickupLocation) ?? '').trim().toLowerCase(),
+            })),
+        });
+        const idemHit = reserveIdempotency(idemSig);
+        if (idemHit) return res.status(200).json({ duplicate: true, orderNumber: idemHit.orderNumber });
+
         // ONE shared orderNumber for the whole booking — Tier 2 core.
         const sharedOrderNumber = await generateOrderNumber(customer.id);
 
@@ -739,6 +816,8 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             source: 'agency',
         }).catch(() => { /* logged inside */ });
 
+        recordIdempotency(idemSig, sharedOrderNumber); // link the code to the signature
+
         // For backward compat: if 1-vehicle booking, return the single order
         // shape clients are used to. For multi-vehicle, return the wrapper.
         if (createdOrders.length === 1) {
@@ -749,7 +828,10 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
             vehicleCount: createdOrders.length,
             orders: createdOrders,
         });
-    } catch (error) { next(error); }
+    } catch (error) {
+        if (idemSig) releaseIdempotency(idemSig); // don't block a retry of a failed submit
+        next(error);
+    }
 });
 
 // ─── Update order (edit) ──────────────────────────────────────────────
@@ -828,6 +910,54 @@ router.put('/booking-items', requireAuth, requireAdmin, validate(bookingItemsSch
         const updated = await orderService.updateBookingItemsBulk(req.body.items);
         res.json({ updated: updated.length, orders: updated });
     } catch (error) { next(error); }
+});
+
+// ─── Unified edit form (✏️) — single order OR whole booking ──────────────
+// Literal path, registered BEFORE `/:id`. See services/booking-edit.service.js.
+const bookingUpdateSchema = z.object({
+    customer: z.object({
+        customerName: z.string(),
+        customerType: z.string(),
+        companyName: z.string().nullable().optional(),
+        customerPhone: z.string().nullable().optional(),
+    }).optional(),
+    items: z.array(z.object({
+        orderId: z.number().int(),
+        carId: z.number().int().nullable().optional(),
+        driverId: z.number().int().nullable().optional(),
+        package: z.string().nullable().optional(),
+        destination: z.string().nullable().optional(),
+        pickupDate: z.string().nullable().optional(),
+        returnDate: z.string().nullable().optional(),
+        pickupLocation: z.string().nullable().optional(),
+        totalPrice: z.union([z.string(), z.number()]).nullable().optional(),
+        overnightNights: z.union([z.string(), z.number()]).optional(),
+        overtimeHours: z.union([z.string(), z.number()]).optional(),
+        bailout: z.union([z.string(), z.number()]).optional(),
+        status: z.string().optional(),
+        notes: z.string().nullable().optional(),
+    })).min(1).max(50),
+    force: z.boolean().optional(),
+});
+
+router.put('/booking-update', requireAuth, requireAdmin, validate(bookingUpdateSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        if (req.user?.accountType === 'client' && req.user?.role !== 'superadmin') {
+            return res.status(403).json({ error: 'Akun client tidak dapat mengubah order.' });
+        }
+        const result = await bookingEditService.update(req.body, req.user);
+        res.json(result);
+    } catch (error) {
+        if (error.status) {
+            return res.status(error.status).json({
+                error: error.message,
+                ...(error.code ? { code: error.code } : {}),
+                ...(error.conflicts ? { conflicts: error.conflicts } : {}),
+                ...(error.details ? { details: error.details } : {}),
+            });
+        }
+        next(error);
+    }
 });
 
 // ─── Tier 2 multi-vehicle: cancel an entire booking by its order code ──

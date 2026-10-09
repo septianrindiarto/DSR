@@ -83,6 +83,7 @@ Migrations applied this stage (alphabetical = safe dependency order):
 | `letter_counter_migration.sql`         | `letter_counters` table (surat number) |
 | `order_claim_migration.sql`            | `orders.claim_status / claimed_by_user_id / claimed_by_agency_id` |
 | `order_customer_name_migration.sql`    | `orders.customer_name` (+ backfill from customers) |
+| `org_doc_numbering_migration.sql`      | `organizations.doc_numbering` (per-org invoice/surat prefixes) |
 | `orders_shared_code_migration.sql`     | Tier 2 shared order code (drop UNIQUE) — if not already applied |
 | `zz_backfill_claim_status_migration.sql` | stamps legacy unclaimed orders as owned (runs last) |
 

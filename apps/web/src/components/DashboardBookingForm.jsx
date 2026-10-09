@@ -52,7 +52,7 @@ export default function DashboardBookingForm({ onCreated }) {
     user?.accountType === "client" ||
     user?.role === "client" || user?.role === "client_admin";
   const isAgency = !isClient;
-  const [companies, setCompanies] = useState([]);
+  const [companyOptions, setCompanyOptions] = useState([]); // autosuggest names
 
   useEffect(() => {
     api.me.get().then(setMe).catch(() => {});
@@ -63,14 +63,25 @@ export default function DashboardBookingForm({ onCreated }) {
     api.myOrg.getInfo().then(setOrgInfo).catch(() => {});
   }, [user?.organizationId]);
 
-  // Affiliated client companies — only agency staff need this list. The
-  // companies endpoint already scopes to the caller's agency (every org with
-  // parent_agency_id = the agency).
+  // Company autosuggest — the field is FREE TEXT (an agency user may book for
+  // any company), and these only power the datalist recommendations. Sources:
+  //   • per-user booking history (all companies for a superadmin)
+  //   • registered client organizations
+  // Merged + de-duped; failures are non-fatal (you can still type freely).
   useEffect(() => {
     if (!isAgency) return;
-    api.companies.list("limit=1000")
-      .then(res => setCompanies(Array.isArray(res) ? res : (res?.data || [])))
-      .catch(() => {});
+    Promise.allSettled([
+      api.orders.companySuggestions(),
+      api.companies.list("limit=1000"),
+    ]).then(([hist, regs]) => {
+      const names = new Set();
+      const h = hist.status === "fulfilled" ? (hist.value?.data || hist.value || []) : [];
+      h.forEach((n) => n && names.add(String(n).trim()));
+      const r = regs.status === "fulfilled"
+        ? (Array.isArray(regs.value) ? regs.value : (regs.value?.data || [])) : [];
+      r.forEach((c) => c?.name && names.add(String(c.name).trim()));
+      setCompanyOptions([...names].filter(Boolean).sort((a, b) => a.localeCompare(b)));
+    });
   }, [isAgency]);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -255,17 +266,18 @@ export default function DashboardBookingForm({ onCreated }) {
           </FieldL>
 
           {isAgency ? (
-            <FieldL label="Nama Perusahaan" hint="Pilih perusahaan klien (afiliasi agensi Anda)">
-              <select
+            <FieldL label="Nama Perusahaan" hint="Ketik nama perusahaan klien (rekomendasi dari riwayat Anda). Kosongkan untuk pemesanan pribadi.">
+              <input
+                type="text"
+                list="dash-company-suggestions"
                 value={form.companyName}
                 onChange={e => set("companyName", e.target.value)}
                 className="input"
-              >
-                <option value="">— Pilih perusahaan klien —</option>
-                {companies.map(c => (
-                  <option key={c.id} value={c.name}>{c.name}</option>
-                ))}
-              </select>
+                placeholder="Nama perusahaan klien"
+              />
+              <datalist id="dash-company-suggestions">
+                {companyOptions.map((name, i) => <option key={i} value={name} />)}
+              </datalist>
             </FieldL>
           ) : (
             <FieldL label="Nama Perusahaan" hint={hasCompany ? "Diisi otomatis dari akun Anda" : "Akun ini belum terdaftar pada perusahaan"}>

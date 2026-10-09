@@ -1,8 +1,39 @@
 import { db } from '../db/index.js';
 import { organizations, user as userTable, clientAgencyLinks } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull, asc } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { sendEmail } from './email.service.js';
+
+// ─── Default ("home") agency resolution — replaces the old hardcoded id 1 ───
+// Order: DEFAULT_AGENCY_ID env (if it points at a real top-level agency) →
+// oldest active top-level org (parent_agency_id IS NULL). Cached in memory
+// after the first successful lookup, so it costs one query per process.
+// With a single agency (today's setup) this resolves to that agency, so
+// existing behaviour is unchanged.
+let _defaultAgencyId = null;
+export async function resolveDefaultAgencyId() {
+    if (_defaultAgencyId) return _defaultAgencyId;
+    const envId = Number(process.env.DEFAULT_AGENCY_ID);
+    if (envId) {
+        const [o] = await db.select({ id: organizations.id }).from(organizations)
+            .where(and(eq(organizations.id, envId), isNull(organizations.parentAgencyId))).limit(1);
+        if (o) return (_defaultAgencyId = o.id);
+    }
+    const [first] = await db.select({ id: organizations.id }).from(organizations)
+        .where(and(isNull(organizations.parentAgencyId), eq(organizations.isActive, true)))
+        .orderBy(asc(organizations.id)).limit(1);
+    _defaultAgencyId = first?.id || null;
+    return _defaultAgencyId;
+}
+
+// Agency org id for an agency code, or null.
+export async function findAgencyIdByCode(agencyCode) {
+    const code = String(agencyCode || '').trim().toUpperCase();
+    if (!code) return null;
+    const [o] = await db.select({ id: organizations.id }).from(organizations)
+        .where(and(eq(organizations.agencyCode, code), isNull(organizations.parentAgencyId))).limit(1);
+    return o?.id || null;
+}
 
 // ─── Client ↔ Agency relationships + affiliate / agency codes (Stage 2 P2) ───
 // Many-to-many links live in client_agency_links. status: active | pending

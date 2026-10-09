@@ -1,0 +1,11 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- organizations.doc_numbering — per-org document numbering prefixes
+-- (Pengaturan → Penomoran Dokumen). Moves the config off per-browser
+-- localStorage so invoice/surat prefixes are shared across devices and users.
+-- Shape (jsonb):
+--   { yearPrefix, invoicePrefix, letterPrefix, kwitansiPrefix,
+--     penawaranPrefix, perjanjianPrefix, suratJalanPrefix }
+-- Nullable — when NULL the app falls back to its built-in defaults.
+-- Idempotent.
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS doc_numbering JSONB;

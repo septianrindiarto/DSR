@@ -133,6 +133,8 @@ import accessRequestsRoutes from './routes/access-requests.routes.js';
 app.use('/api/access-requests', apiLimiter, accessRequestsRoutes);
 import orgsRoutes from './routes/orgs.routes.js';
 app.use('/api/orgs', apiLimiter, orgsRoutes);
+import invoicesRoutes from './routes/invoices.routes.js';
+app.use('/api/invoices', apiLimiter, invoicesRoutes);
 // Telegram + future channels (test ping, status). Admin-only inside the router.
 import notificationsRoutes from './routes/notifications.routes.js';
 app.use('/api/notifications', apiLimiter, notificationsRoutes);

@@ -618,6 +618,27 @@ export const orderService = {
         return rows.map(r => ({ ...r.order, car: r.car, customer: r.customer, driver: r.driver }));
     },
 
+    // Autosuggest source for the booking form's "Nama Perusahaan" field.
+    // Each user sees the distinct companies THEY have previously booked for
+    // (orders.created_by = them); a superadmin sees every company on record.
+    // The field itself stays free-text — this only powers the recommendations.
+    async companySuggestions(user) {
+        const conds = [
+            sql`${customers.companyName} IS NOT NULL`,
+            sql`TRIM(${customers.companyName}) <> ''`,
+        ];
+        if (user?.role !== 'superadmin' && user?.id) {
+            conds.push(eq(orders.createdBy, user.id));
+        }
+        const rows = await db
+            .selectDistinct({ name: customers.companyName })
+            .from(orders)
+            .leftJoin(customers, eq(orders.customerId, customers.id))
+            .where(and(...conds))
+            .orderBy(asc(customers.companyName));
+        return rows.map((r) => r.name).filter(Boolean);
+    },
+
     async markWhatsAppSent(id) {
         const result = await db.update(orders).set({ whatsappSent: true, updatedAt: new Date() }).where(eq(orders.id, id)).returning();
         return result[0];

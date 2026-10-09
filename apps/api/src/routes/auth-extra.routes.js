@@ -24,12 +24,11 @@ import { validate } from '../middleware/validate.js';
 import { generateUniqueInviteCode, normalizeCompanyName } from '../services/invite-code.service.js';
 import { findAvailableDisplayId } from '../services/display-id.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
-import { relationshipService } from '../services/relationship.service.js';
+import { relationshipService, resolveDefaultAgencyId, findAgencyIdByCode } from '../services/relationship.service.js';
 
-// Phase 4C-1 — for now, every new client org is owned by DSR (org id 1).
-// When multi-agency support ships, this becomes a per-request decision based
-// on which agency's signup link was used.
-const DEFAULT_AGENCY_ID = 1;
+// New client orgs get parent_agency_id = the agency whose agencyCode was used
+// at signup, else the default/home agency (see resolveDefaultAgencyId). The
+// client_agency_links junction is still written below for the code case.
 
 const router = Router();
 
@@ -186,6 +185,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
             }
             // Generate the invite code BEFORE inserting so we can put it on the row.
             const code = await generateUniqueInviteCode();
+            const parentAgencyId = (await findAgencyIdByCode(agencyCode)) || (await resolveDefaultAgencyId());
             const [orgRow] = await db.insert(organizations).values({
                 name: companyName.trim(),
                 nameNormalized: normalized,
@@ -193,7 +193,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                 adminUserId: newUserId,
                 inviteCode: code,
                 displayId,
-                parentAgencyId: DEFAULT_AGENCY_ID,
+                parentAgencyId,
             }).returning({ id: organizations.id });
             finalOrgId = orgRow.id;
             createdOrgId = orgRow.id; // for rollback on later failure

@@ -9,6 +9,10 @@ const MONTHS_ID = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "
 // Top-5 chart palette — uses brand red as the lead contributor color.
 const BAR_COLORS = ["bg-primary", "bg-blue-500", "bg-amber-500", "bg-emerald-500", "bg-violet-500"];
 
+// Company-owned units come from Armada (cars.is_owned). Plates are compared
+// normalized (no spaces/dashes, upper-case) so "B 2653 KRO" == "B2653KRO".
+const normPlate = (p) => String(p || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
 export default function AdminAnalytics() {
   const { t } = useLanguage();
 
@@ -132,6 +136,78 @@ export default function AdminAnalytics() {
     return { current: buildPanel(0), last: buildPanel(-1) };
   }, [orders, monthWindow, carPriceById]);
 
+  // carId → normalized plate, so orders without an embedded car still match.
+  const carPlateById = useMemo(() => {
+    const m = new Map();
+    for (const c of cars) m.set(c.id, normPlate(c.licensePlate));
+    return m;
+  }, [cars]);
+
+  // Owned units = cars flagged "Unit milik sendiri" in Armada.
+  const OWNED_UNITS = useMemo(() => (
+    [...new Set(cars.filter((c) => c.isOwned).map((c) => normPlate(c.licensePlate)).filter(Boolean))].sort()
+  ), [cars]);
+
+  // ─── Owned-unit income: same 5-month window + metrics as the YoY table,
+  //     but only for OWNED_UNITS, broken down per plate. ────────────────────
+  const ownedData = useMemo(() => {
+    const blank = () => ({ cars: 0, totalDays: 0, omset: 0, net: 0, _codes: new Set() });
+    const cells = new Map(); // key = `${year}-${month}-${plate}`
+    for (const { year, month } of monthWindow) {
+      for (const plate of OWNED_UNITS) {
+        cells.set(`${year}-${month}-${plate}`, blank());
+        cells.set(`${year - 1}-${month}-${plate}`, blank());
+      }
+    }
+
+    const resolveCarPrice = (o) => {
+      const lookup = carPriceById.get(o.carId ?? o.car?.id);
+      if (lookup != null) return lookup;
+      if (o.car?.price != null) return Number(o.car.price);
+      if (o.unitPrice != null) return Number(o.unitPrice);
+      return 0;
+    };
+
+    for (const o of orders) {
+      const plate = normPlate(o.car?.licensePlate) || carPlateById.get(o.carId ?? o.car?.id) || "";
+      if (!OWNED_UNITS.includes(plate)) continue;
+      const raw = o.pickupDate || o.createdAt;
+      if (!raw) continue;
+      const d = new Date(raw);
+      if (isNaN(d.getTime())) continue;
+      const row = cells.get(`${d.getFullYear()}-${d.getMonth() + 1}-${plate}`);
+      if (!row) continue; // outside window
+
+      const days = Math.max(1, Number(o.totalDays || 0));
+      row.cars += 1;
+      row._codes.add((o.orderNumber || "").trim() || `id:${o.id}`);
+      row.totalDays += days;
+      row.omset += Number(o.totalPrice || 0);
+      row.net += resolveCarPrice(o) * days;
+    }
+
+    const zero = () => ({ trips: 0, totalDays: 0, omset: 0, net: 0 });
+    const add = (a, b) => ({ trips: a.trips + b.trips, totalDays: a.totalDays + b.totalDays, omset: a.omset + b.omset, net: a.net + b.net });
+
+    const buildPanel = (yearOffset) => {
+      const unitTotals = Object.fromEntries(OWNED_UNITS.map((p) => [p, zero()]));
+      const months = monthWindow.map(({ year, month }) => {
+        const y = year + yearOffset;
+        const units = OWNED_UNITS.map((plate) => {
+          const r = cells.get(`${y}-${month}-${plate}`) || blank();
+          const u = { plate, trips: r._codes.size, totalDays: r.totalDays, omset: r.omset, net: r.net };
+          unitTotals[plate] = add(unitTotals[plate], u);
+          return u;
+        });
+        return { monthLabel: `${MONTHS_ID[month]} ${y}`, units, subtotal: units.reduce(add, zero()) };
+      });
+      const grand = Object.values(unitTotals).reduce(add, zero());
+      return { months, unitTotals, grand };
+    };
+
+    return { current: buildPanel(0), last: buildPanel(-1) };
+  }, [orders, monthWindow, carPriceById, carPlateById, OWNED_UNITS]);
+
   // ─── Top 5 contributors (by omset) ────────────────────────────────────────
   // All non-corporate orders collapse into a SINGLE bucket regardless of how
   // the source data labeled them. An order counts as private when ANY of the
@@ -187,7 +263,7 @@ export default function AdminAnalytics() {
         <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-3">
           <div>
             <h2 className="font-bold text-slate-900">{t("yoyComparison")}</h2>
-            <p className="text-xs text-slate-500 mt-0.5">{headerYear} vs {headerLastYear} — 5 bulan terakhir</p>
+            <p className="text-xs text-slate-500 mt-0.5">{headerYear} vs {headerLastYear} — {t("analyticsWindowLabel")}</p>
           </div>
           <span className="material-symbols-outlined text-primary text-[24px]">trending_up</span>
         </div>
@@ -216,6 +292,32 @@ export default function AdminAnalytics() {
             </div>
           </div>
         </div>
+      </section>
+
+      {/* ─── Insight 1b — Owned-unit income (left: this year, right: last year) */}
+      <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-bold text-slate-900">{t("ownedUnitIncome")}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {OWNED_UNITS.length ? `${OWNED_UNITS.join(" & ")} — ` : ""}{headerYear} vs {headerLastYear}, {t("analyticsWindowLabel")}
+            </p>
+          </div>
+          <span className="material-symbols-outlined text-primary text-[24px]">directions_car</span>
+        </div>
+
+        {OWNED_UNITS.length === 0 ? (
+          <p className="text-slate-400 text-sm text-center py-8 px-5">{loading ? t("loadingShort") : t("ownedUnitEmpty")}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <div className="grid grid-cols-1 lg:grid-cols-2">
+              <OwnedUnitTable year={headerYear} units={OWNED_UNITS} panel={ownedData.current} t={t} fmt={fmt} loading={loading} accent="primary" />
+              <div className="border-t lg:border-t-0 lg:border-l border-slate-200">
+                <OwnedUnitTable year={headerLastYear} units={OWNED_UNITS} panel={ownedData.last} t={t} fmt={fmt} loading={loading} accent="slate" />
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ─── Insight 2 — Top 5 contributors (percentage) ──────────────────── */}
@@ -261,13 +363,13 @@ export default function AdminAnalytics() {
               {/* Footer summary */}
               <div className="pt-3 mt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                 <span>
-                  {t("total")} omset 5 kontributor teratas:&nbsp;
+                  {t("top5Total")}:&nbsp;
                   <b className="text-slate-700">
                     Rp{fmt(contributors.list.reduce((s, c) => s + c.value, 0))}
                   </b>
                 </span>
                 <span>
-                  {(contributors.list.reduce((s, c) => s + c.pct, 0)).toFixed(1)}% dari total
+                  {(contributors.list.reduce((s, c) => s + c.pct, 0)).toFixed(1)}% {t("ofTotal")}
                 </span>
               </div>
             </div>
@@ -275,6 +377,82 @@ export default function AdminAnalytics() {
         </div>
       </section>
     </AdminLayout>
+  );
+}
+
+// ─── Sub-component: one year's owned-unit table ───────────────────────────
+// Each month spans one row per owned plate; footer shows per-unit totals and
+// the grand total for the year panel.
+function OwnedUnitTable({ year, units, panel, t, fmt, loading, accent }) {
+  const accentRing = accent === "primary" ? "bg-primary/5 text-primary" : "bg-slate-100 text-slate-600";
+  const nUnits = units.length;
+  const cells = (r, bold = false) => (
+    <>
+      <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.trips)}</td>
+      <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.totalDays)}</td>
+      <td className="px-3 py-2.5 text-right text-slate-700 font-mono">{fmt(r.omset)}</td>
+      <td className={`px-5 py-2.5 text-right font-mono ${bold ? "text-slate-900 font-bold" : "text-slate-900 font-semibold"}`}>{fmt(r.net)}</td>
+    </>
+  );
+
+  return (
+    <div>
+      <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded ${accentRing}`}>{year}</span>
+        <span className="text-xs text-slate-500">{panel.months.length} {t("monthsCount")} · {nUnits} {t("plateUnit").toLowerCase()}</span>
+      </div>
+
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-white border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
+            <th className="text-left font-semibold px-5 py-2.5">{t("month")}</th>
+            <th className="text-left font-semibold px-3 py-2.5">{t("plateUnit")}</th>
+            <th className="text-right font-semibold px-3 py-2.5" title={t("tripsBookedFull")}>{t("tripsBooked")}</th>
+            <th className="text-right font-semibold px-3 py-2.5">{t("sumDays")}</th>
+            <th className="text-right font-semibold px-3 py-2.5">{t("omset")}</th>
+            <th className="text-right font-semibold px-5 py-2.5">{t("net")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {panel.months.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="px-5 py-8 text-center text-slate-400 text-sm">{loading ? t("loadingShort") : t("noData")}</td>
+            </tr>
+          ) : (
+            panel.months.map((m) => (
+              m.units.map((u, i) => (
+                <tr
+                  key={`${m.monthLabel}-${u.plate}`}
+                  className={`hover:bg-slate-50/60 transition-colors ${i === nUnits - 1 ? "border-b border-slate-200" : "border-b border-slate-100"}`}
+                >
+                  {i === 0 && (
+                    <td rowSpan={nUnits} className="px-5 py-2.5 font-medium text-slate-800 whitespace-nowrap align-top">
+                      {m.monthLabel}
+                      <div className="text-[11px] font-normal text-slate-400 mt-0.5">Rp{fmt(m.subtotal.omset)}</div>
+                    </td>
+                  )}
+                  <td className="px-3 py-2.5 text-slate-700 font-mono text-xs whitespace-nowrap">{u.plate}</td>
+                  {cells(u)}
+                </tr>
+              ))
+            ))
+          )}
+        </tbody>
+        <tfoot>
+          {units.map((plate, i) => (
+            <tr key={plate} className="bg-slate-50 text-slate-700">
+              {i === 0 && <td rowSpan={nUnits} className="px-5 py-2.5 font-semibold align-top">{t("total")} / {t("plateUnit").toLowerCase()}</td>}
+              <td className="px-3 py-2.5 font-mono text-xs">{plate}</td>
+              {cells(panel.unitTotals[plate])}
+            </tr>
+          ))}
+          <tr className="bg-slate-50 border-t-2 border-slate-300 font-bold text-slate-900">
+            <td className="px-5 py-3" colSpan={2}>{t("total")}</td>
+            {cells(panel.grand, true)}
+          </tr>
+        </tfoot>
+      </table>
+    </div>
   );
 }
 
@@ -290,7 +468,7 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
         <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded ${accentRing}`}>
           {year}
         </span>
-        <span className="text-xs text-slate-500">{rows.length} bulan</span>
+        <span className="text-xs text-slate-500">{rows.length} {t("monthsCount")}</span>
       </div>
 
       <table className="w-full text-sm">
@@ -308,7 +486,7 @@ function YoYTable({ year, rows, totals, t, fmt, loading, accent }) {
           {rows.length === 0 ? (
             <tr>
               <td colSpan={6} className="px-5 py-8 text-center text-slate-400 text-sm">
-                {loading ? "Memuat..." : t("noData")}
+                {loading ? t("loadingShort") : t("noData")}
               </td>
             </tr>
           ) : (
