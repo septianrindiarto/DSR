@@ -21,6 +21,8 @@ export const dashboardService = {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            // Same rule as Rekap Order: own org + orders claimed by my agency.
+            claimedByAgencyId: orders.claimedByAgencyId,
         });
         const carScope = buildScopeConditions(scopeUser, {
             organizationId: cars.organizationId,
@@ -31,6 +33,7 @@ export const dashboardService = {
             organizationId: customers.organizationId,
             isDemo: customers.isDemo,
             createdBy: customers.createdBy,
+            customerId: customers.id,
         });
         const drvScope = buildScopeConditions(scopeUser, {
             organizationId: drivers.organizationId,
@@ -90,6 +93,9 @@ export const dashboardService = {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            // Same rule as Rekap Order: own org + orders claimed by my agency.
+            claimedByAgencyId: orders.claimedByAgencyId,
+            ownerUserId: customers.userId,
         });
 
         let query = db

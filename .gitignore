@@ -1,3 +1,55 @@
 # exclude folder
 gitignore/
 DSR Invoice Automation/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRIVATE / LOCAL-ONLY — never pushed to GitHub (owner 2026-11-18).
+# These files stay on the developer's computer. Keep adding to the categories
+# below instead of committing such files. See CLAUDE.md → "Public repo hygiene".
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. Business documents & spreadsheets (requirements, forms, proposals)
+docs/*.xlsx
+docs/*.xlsm
+docs/*.xls
+docs/*.docx
+docs/*.pdf
+/*.pdf
+~$*
+
+# 2. Test scenarios, test feedback, manual checklists / matrices
+docs/testing/
+docs/Test_Checklist*.md
+docs/*Test_Matrix*.md
+
+# 3. Decisions still waiting for the owner's confirmation
+docs/Review_Register.md
+docs/PRIVATE_INDEX.md
+
+# 4. Unused / redundant / expired files
+.backup/
+*_backup_*
+*.superseded
+*.deleted
+*_copy.jsx
+*.bak
+*.orig
+#    early design mockups (reference only, replaced by the real app)
+/Admin */
+/Car Detail and Booking From/
+/Public Catalog Landing Page/
+#    finished-stage logs, old runbooks and design notes already built
+docs/Stage*_Request_Milestones.md
+docs/Stage2_OrderClaim_Design.md
+docs/Deploy_Runbook_Stage2.md
+docs/Redeploy_2026-10_Runbook.md
+docs/Audit_v2_Reconciliation.md
+docs/Contract_Module_Redesign.md
+
+# 5. Internal strategy (competitors, benchmarks, roadmap)
+docs/Competitor_Gap_TRAC_ASSA.md
+docs/Rental_Feature_Benchmark.md
+docs/Multi_Vendor_Roadmap.md
+
+# 6. Local tool output
+purge-backups/

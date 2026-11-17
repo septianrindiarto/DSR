@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from "react";
 
 // Toast notification system (audit M-08).
 // Replaces native alert() calls across the app. The provider mounts once at
@@ -23,28 +23,47 @@ export function ToastProvider({ children }) {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  // Same message already on screen → don't stack a copy (a burst of failing
+  // requests used to fill the screen with identical toasts); just extend it.
+  const visible = useRef(new Map()); // `${variant}|${message}` → { id, timer }
   const push = useCallback((variant, message, opts = {}) => {
-    const id = ++_toastId;
+    const key = `${variant}|${message}`;
     const duration = opts.duration || 4000;
-    setToasts(prev => [...prev, { id, variant, message }]);
+    const hit = visible.current.get(key);
+    if (hit) {
+      clearTimeout(hit.timer);
+      hit.timer = duration > 0 ? setTimeout(() => { visible.current.delete(key); dismiss(hit.id); }, duration) : null;
+      setToasts(prev => prev.map(t => (t.id === hit.id ? { ...t, count: (t.count || 1) + 1 } : t)));
+      return hit.id;
+    }
+    const id = ++_toastId;
+    const entry = { id, timer: null };
+    visible.current.set(key, entry);
+    setToasts(prev => [...prev.slice(-4), { id, variant, message }]); // max 5 on screen
     if (duration > 0) {
-      setTimeout(() => dismiss(id), duration);
+      entry.timer = setTimeout(() => { visible.current.delete(key); dismiss(id); }, duration);
     }
     return id;
   }, [dismiss]);
 
-  const api = {
+  // Stable identity: pages list `toast` in effect dependencies, so a new object
+  // per render made every error toast re-run those effects (request → error →
+  // toast → re-render → request …).
+  const api = useMemo(() => ({
     success: (msg, opts) => push("success", msg, opts),
     error:   (msg, opts) => push("error",   msg, opts),
     info:    (msg, opts) => push("info",    msg, opts),
     warning: (msg, opts) => push("warning", msg, opts),
-    dismiss,
-  };
+    dismiss: (id) => {
+      for (const [k, v] of visible.current) if (v.id === id) { clearTimeout(v.timer); visible.current.delete(k); }
+      dismiss(id);
+    },
+  }), [push, dismiss]);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <ToastStack toasts={toasts} onDismiss={dismiss} />
+      <ToastStack toasts={toasts} onDismiss={api.dismiss} />
     </ToastContext.Provider>
   );
 }
@@ -97,7 +116,7 @@ function ToastItem({ toast, onDismiss }) {
       role="status"
     >
       <span className={"material-symbols-outlined text-[20px] mt-0.5 " + s.iconColor}>{s.icon}</span>
-      <div className="flex-1 text-sm">{toast.message}</div>
+      <div className="flex-1 text-sm">{toast.message}{toast.count > 1 && <span className="ml-1.5 text-[11px] font-bold opacity-70">×{toast.count}</span>}</div>
       <button
         onClick={() => { setLeaving(true); setTimeout(() => onDismiss(toast.id), 120); }}
         className="text-slate-400 hover:text-slate-600 cursor-pointer"

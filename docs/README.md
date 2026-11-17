@@ -12,13 +12,14 @@ platform — for developers, AI assistants, operators, and users.
 | [`Build_With_AI_Walkthrough.md`](Build_With_AI_Walkthrough.md) | How the whole app is built: design, infra, security, DB, and **every feature as input→process→output**. Follow it to rebuild the app or lift a mechanism. | Devs, learners, adopters |
 | [`User_Guide.md`](User_Guide.md) | How to **use** every feature — separate client and agency walkthroughs. | Clients, agency staff, support |
 | [`Deployment_Master_Guide.md`](Deployment_Master_Guide.md) | Step-by-step VPS deployment + ops + troubleshooting. | Operators |
+| [`Server_Monitoring_Assessment.md`](Server_Monitoring_Assessment.md) | What to monitor and the proposed built-in monitoring page (not built yet). | Operators |
 | [`CICD_GitHub_Actions_Setup.md`](CICD_GitHub_Actions_Setup.md) | One-time setup for auto-deploy on push (GitHub Actions → VPS). | Operators |
-| [`Tier2_E2E_Test_Matrix.md`](Tier2_E2E_Test_Matrix.md) | Manual test matrix for the multi-vehicle flows (pairs with `apps/api/test/`). | QA, devs |
-| [`Stage1_Request_Milestones.md`](Stage1_Request_Milestones.md) | Chronological log of requests & milestones for Stage 1, plus workflow notes and open follow-ups. | PM, devs |
-| [`Stage2_Request_Milestones.md`](Stage2_Request_Milestones.md) | Stage 2 milestone log (post-launch enhancements & ops). | PM, devs |
-| [`Stage2_OrderClaim_Design.md`](Stage2_OrderClaim_Design.md) | Design note: agency↔client foundation fixes + claim-based order routing + agent affiliate links (not yet built). | Devs |
-| [`Multi_Vendor_Roadmap.md`](Multi_Vendor_Roadmap.md) | Phase 2 design note (many clients ↔ many agencies). | Devs (future) |
-| [`Audit_v2_Reconciliation.md`](Audit_v2_Reconciliation.md) | Reconciliation of the v2 QA audit vs actual code state. | Devs |
+| [`Reliability_DR_Runbook.md`](Reliability_DR_Runbook.md) | Neon reliability (health, keep-warm), backups (`ops/backup/`), recovery playbooks, drills, data retention. | Operators |
+| [`GPS_Telematics_Design.md`](GPS_Telematics_Design.md) | GPS tracking + driver behaviour design (Traccar, storage, scoring, phases). Not built yet. | PM, devs |
+
+Internal documents — test scenarios, the review register (decisions awaiting the
+owner), business spreadsheets, stage logs and strategy notes — are kept locally
+and are not part of this repository.
 
 ## Quick orientation
 
@@ -34,8 +35,8 @@ platform — for developers, AI assistants, operators, and users.
 
 - When you add a feature, update `Build_With_AI_Walkthrough.md` (the IPO entry)
   and, if it changes the contract/conventions, `CLAUDE.md`.
-- Log each working stage in its own `StageN_Request_Milestones.md` and link it
-  here.
+- Internal / private documents are listed in `PRIVATE_INDEX.md` (local only, git-ignored);
+  never link them from this public index.
 - Keep user-facing changes reflected in `User_Guide.md`.
 - Operational changes (env, migrations, deploy steps) go in
   `Deployment_Master_Guide.md`.

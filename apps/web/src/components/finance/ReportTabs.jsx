@@ -3,6 +3,7 @@ import { api, apiCache, swr } from "../../lib/api";
 import TablePagination from "../TablePagination";
 import { useToast } from '../Toast';
 
+import AsyncButton from "../AsyncButton";
 const fmt = v => Number(v || 0).toLocaleString("id-ID", { minimumFractionDigits: 0 });
 const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
 const toInputDate = d => {
@@ -296,10 +297,10 @@ export function TabJurnal({ params, onClearSuccess }) {
       {selected.size > 0 && (
         <div className="flex items-center gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
           <span className="text-sm font-medium text-red-700">{selected.size} entri dipilih</span>
-          <button onClick={handleBulkDelete}
+          <AsyncButton onClick={() => handleBulkDelete(false)}
             className="flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 cursor-pointer">
             <span className="material-symbols-outlined text-[15px]">delete</span>Hapus Pilihan
-          </button>
+          </AsyncButton>
           <button onClick={() => setSelected(new Set())}
             className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Batalkan</button>
         </div>
@@ -363,14 +364,14 @@ export function TabJurnal({ params, onClearSuccess }) {
                       className="p-1 text-slate-400 hover:text-primary cursor-pointer rounded">
                       <span className="material-symbols-outlined text-[16px]">edit</span>
                     </button>
-                    <button onClick={() => handleReverse(e)} title="Buat Reversal"
+                    <AsyncButton onClick={() => handleReverse(e)} title="Buat Reversal"
                       className="p-1 text-slate-400 hover:text-amber-600 cursor-pointer rounded">
                       <span className="material-symbols-outlined text-[16px]">undo</span>
-                    </button>
-                    <button onClick={() => handleDelete(e)} title="Hapus"
+                    </AsyncButton>
+                    <AsyncButton onClick={() => handleDelete(e)} title="Hapus"
                       className="p-1 text-slate-400 hover:text-red-500 cursor-pointer rounded">
                       <span className="material-symbols-outlined text-[16px]">delete</span>
-                    </button>
+                    </AsyncButton>
                   </div>
                 </td>
               </tr>

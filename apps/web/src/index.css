@@ -104,3 +104,10 @@ h6 {
     transform: translateY(0) scale(1);
   }
 }
+/* Printing (e.g. Portal Perusahaan → Laporan Bulanan → Cetak / Simpan PDF):
+   hide the admin chrome, print only the page content. */
+@media print {
+  aside, header, footer, nav { display: none !important; }
+  main, main > div { overflow: visible !important; height: auto !important; }
+  body { background: #fff !important; }
+}

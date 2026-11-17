@@ -222,6 +222,25 @@ async function rowsToXlsxBlob(rows) {
   return new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 
+/**
+ * Read EVERY sheet of a workbook with typed cells: dates come back as Date
+ * objects and numbers as numbers (no locale formatting). Used by the
+ * cash-book import, where "1/5/26" style formatted strings are ambiguous.
+ * → [{ name, rows }]
+ */
+export async function parseWorkbookTyped(file, { headerRow = 1 } = {}) {
+  const XLSX = await loadXlsx();
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
+  // headerRow (1-based) lets manual books with a title block above the
+  // column headers be read correctly.
+  const range = Math.max(0, Number(headerRow) - 1);
+  return wb.SheetNames.map((name) => ({
+    name,
+    rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: "", raw: true, range }),
+  }));
+}
+
 async function parseXlsxFile(file) {
   const XLSX = await loadXlsx();
   const buf = await file.arrayBuffer();

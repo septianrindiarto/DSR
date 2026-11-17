@@ -7,6 +7,8 @@ export function AuthProvider({ children }) {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
     const [sessionExpired, setSessionExpired] = useState(false);
+    // Why the session ended (owner 2026-11-13): { code: SESSION_EXPIRED | SESSION_KICKED, device }
+    const [sessionEnd, setSessionEnd] = useState(null);
 
     useEffect(() => {
         checkSession();
@@ -19,10 +21,11 @@ export function AuthProvider({ children }) {
     // of this interceptor so it does not falsely trip on the very first
     // visit when the user is just not logged in yet.
     useEffect(() => {
-        function onAuthExpired() {
+        function onAuthExpired(e) {
             if (user || sessionExpired) {
                 setUser(null);
                 setSessionExpired(true);
+                if (e?.detail?.code) setSessionEnd({ code: e.detail.code, device: e.detail.device || null });
             }
         }
         window.addEventListener('auth:expired', onAuthExpired);
@@ -31,28 +34,77 @@ export function AuthProvider({ children }) {
 
     function clearSessionExpired() {
         setSessionExpired(false);
+        setSessionEnd(null);
+    }
+
+    // A transient failure (rate limit 429, DB waking 503, network blip) must
+    // NOT look like "logged out" — that bounced users to the login page
+    // mid-session. Retry those a few times with backoff; only a real 401 /
+    // empty session means not authenticated.
+    // RBAC v2: merge the server-computed permissions into the user object so
+    // the UI shows exactly what the API allows (user.perms, legalStatus…).
+    async function withAccess(u) {
+        if (!u) return null;
+        try {
+            const a = await api.users.myAccess();
+            return { ...u, perms: a.permissions, templateKey: a.templateKey, templateName: a.templateName, legalStatus: a.legalStatus, accountType: a.accountType || u.accountType };
+        } catch {
+            return u; // fall back to role-based menus; the server still enforces
+        }
+    }
+
+    async function refreshAccess() {
+        setUser(await withAccess(user));
     }
 
     async function checkSession() {
-        try {
-            const session = await api.auth.getSession();
-            if (session?.user) {
-                setUser(session.user);
+        const delays = [800, 2000, 4000];
+        for (let attempt = 0; ; attempt++) {
+            try {
+                const session = await api.auth.getSession();
+                setUser(await withAccess(session?.user || null));
+                break;
+            } catch (error) {
+                const transient = !error?.status || error.status === 429 || error.status >= 500;
+                if (transient && attempt < delays.length) {
+                    await new Promise((r) => setTimeout(r, delays[attempt]));
+                    continue;
+                }
+                // Page opened after the idle timeout / a take-over elsewhere → say why.
+                const code = error?.body?.code;
+                if (code === 'SESSION_EXPIRED' || code === 'SESSION_KICKED') {
+                    setSessionExpired(true);
+                    setSessionEnd({ code, device: error.body.device || null });
+                }
+                setUser(null);
+                break;
             }
-        } catch (error) {
-            // Not authenticated
-            setUser(null);
-        } finally {
-            setLoading(false);
         }
+        setLoading(false);
     }
 
-    async function login(email, password) {
-        const result = await api.auth.signIn({ email, password });
+    // 2FA users get { twoFactorRedirect: true } instead of a session; the
+    // login page then asks for the 6-digit code and calls verifyTwoFactor().
+    // force: take over a login idle ≥ 5 min elsewhere (server decides; owner 2026-11-13).
+    async function login(email, password, { force = false } = {}) {
+        const result = await api.auth.signIn({ email, password }, { force });
+        if (result?.twoFactorRedirect) return { twoFactor: true };
         if (result?.user) {
-            setUser(result.user);
+            const merged = await withAccess(result.user);
+            setUser(merged);
+            return { ...result, user: merged };
         }
         return result;
+    }
+
+    async function verifyTwoFactor(code, { backup = false, trustDevice = false, force = false } = {}) {
+        const clean = String(code || '').replace(/\s+/g, '');
+        if (backup) await api.auth.twoFactor.verifyBackupCode(clean, { force });
+        else await api.auth.twoFactor.verifyTotp(clean, trustDevice, { force });
+        const session = await api.auth.getSession();
+        const u = await withAccess(session?.user || null);
+        setUser(u);
+        return { user: u };
     }
 
     async function register(payload) {
@@ -74,8 +126,8 @@ export function AuthProvider({ children }) {
 
     return (
         <AuthContext.Provider value={{
-            user, loading, login, register, logout, checkSession,
-            sessionExpired, clearSessionExpired,
+            user, loading, login, verifyTwoFactor, register, logout, checkSession, refreshAccess,
+            sessionExpired, sessionEnd, clearSessionExpired,
         }}>
             {children}
         </AuthContext.Provider>

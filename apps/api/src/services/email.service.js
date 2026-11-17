@@ -98,7 +98,7 @@ function getFromAddress() {
  * @param {string}  [args.text]   — Plain-text body.
  * @returns {Promise<{messageId: string}>} nodemailer info object.
  */
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, attachments }) {
     if (!to) throw new Error('sendEmail: `to` is required.');
     if (!subject) throw new Error('sendEmail: `subject` is required.');
     if (!html && !text) throw new Error('sendEmail: provide `html` or `text` body.');
@@ -106,7 +106,8 @@ export async function sendEmail({ to, subject, html, text }) {
     const transporter = await getTransporter();
     const from = getFromAddress();
 
-    const info = await transporter.sendMail({ from, to, subject, html, text });
+    // attachments: [{ filename, content (string|Buffer), contentType }] (nodemailer format)
+    const info = await transporter.sendMail({ from, to, subject, html, text, ...(attachments?.length ? { attachments } : {}) });
     return info;
 }
 

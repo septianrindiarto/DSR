@@ -8,16 +8,20 @@
 //                                       working; existing members unaffected)
 
 import { Router } from 'express';
+import { resolveDefaultAgencyId } from '../services/relationship.service.js';
 import { db } from '../db/index.js';
 import { organizations, clientAgencyLinks, user as userTable } from '../db/schema.js';
-import { eq, sql, inArray } from 'drizzle-orm';
+import { eq, sql, inArray, and } from 'drizzle-orm';
+import { forgetOrgType, invalidateUser } from '../services/access.service.js';
 import { requireAuth, requireRole, requireSuperAdmin } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
 import { generateUniqueInviteCode } from '../services/invite-code.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
 import { documentService } from '../services/document.service.js';
-import { relationshipService } from '../services/relationship.service.js';
+import { relationshipService, ensureParentLink } from '../services/relationship.service.js';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
 
+import { encryptField, decryptField } from '../services/crypto.service.js';
 const router = Router();
 
 // ─── Stage 2: client ↔ agency relationships + affiliate / agency codes ───────
@@ -40,31 +44,31 @@ router.get('/approve-link', async (req, res) => {
 
 const REL = ROLE_GROUPS.ANY_AUTHENTICATED;
 
-router.get('/my-agencies', requireAuth, requireRole(REL), async (req, res, next) => {
+router.get('/my-agencies', requireAuth, requirePerm('settings', 'view'), async (req, res, next) => {
     try { res.json({ data: await relationshipService.listAgenciesForClient(req.user.organizationId) }); }
     catch (err) { next(err); }
 });
 
-router.post('/my-agencies', requireAuth, requireRole(REL), async (req, res, next) => {
+router.post('/my-agencies', requireAuth, requirePerm('settings', 'edit'), async (req, res, next) => {
     try {
         const result = await relationshipService.addAgencyByCode(req.user.organizationId, req.body.agencyCode, req.user.id);
         res.json(result);
     } catch (err) { next(err); }
 });
 
-router.get('/my-clients', requireAuth, requireRole(REL), async (req, res, next) => {
+router.get('/my-clients', requireAuth, requirePerm('settings', 'view'), async (req, res, next) => {
     try { res.json({ data: await relationshipService.listClientsForAgency(req.user.organizationId) }); }
     catch (err) { next(err); }
 });
 
-router.post('/my-clients', requireAuth, requireRole(REL), async (req, res, next) => {
+router.post('/my-clients', requireAuth, requirePerm('settings', 'edit'), async (req, res, next) => {
     try {
         const result = await relationshipService.agencyAddClient(req.user.organizationId, Number(req.body.clientOrgId), req.user.id);
         res.json(result);
     } catch (err) { next(err); }
 });
 
-router.delete('/links/:id', requireAuth, requireRole(REL), async (req, res, next) => {
+router.delete('/links/:id', requireAuth, requirePerm('settings', 'edit'), async (req, res, next) => {
     try {
         const removed = await relationshipService.removeLink(Number(req.params.id), req.user.organizationId);
         if (!removed) return res.status(404).json({ error: 'Tautan tidak ditemukan.' });
@@ -72,23 +76,36 @@ router.delete('/links/:id', requireAuth, requireRole(REL), async (req, res, next
     } catch (err) { next(err); }
 });
 
-router.post('/affiliate-code', requireAuth, requireRole(REL), async (req, res, next) => {
-    try { res.json({ affiliateCode: await relationshipService.getOrCreateAffiliateCode(req.user.id) }); }
+router.post('/affiliate-code', requireAuth, requirePerm('settings', 'view'), async (req, res, next) => {
+    try {
+        // Personal referral link for AGENCY staff (/?ref=CODE → orders go to their agency).
+        if (req.user.accountType !== 'agency' && req.user.role !== 'superadmin') return res.status(403).json({ error: 'Kode affiliate hanya untuk staf agency.' });
+        res.json({ affiliateCode: await relationshipService.getOrCreateAffiliateCode(req.user.id) });
+    }
     catch (err) { next(err); }
 });
 
-router.post('/agency-code', requireAuth, requireRole(REL), async (req, res, next) => {
+router.post('/agency-code', requireAuth, requirePerm('settings', 'view'), async (req, res, next) => {
     try { res.json({ agencyCode: await relationshipService.getOrCreateAgencyCode(req.user.organizationId) }); }
     catch (err) { next(err); }
 });
 
 // Reserve the next company-wide letter number (No.YY/DSR/NNN). Shared across
 // document types (surat pengantar tagihan, invoice cover, penawaran, …).
-router.post('/next-letter-number', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.post('/next-letter-number', requireAuth, requireAnyPerm('documents.create', 'documents.edit'), async (req, res, next) => {
     try {
         const result = await documentService.getNextLetterNumber(req.user.organizationId);
         res.json(result);
     } catch (error) { next(error); }
+});
+
+// Surat pengantar number of a kode transaksi: reused if the code already has
+// one, otherwise the next company number is reserved for it (owner 2026-11-13).
+router.post('/letter-number-for-code', requireAuth, requireAnyPerm('documents.create', 'documents.edit'), async (req, res, next) => {
+    try {
+        const orgId = req.user.organizationId || (await resolveDefaultAgencyId());
+        res.json(await documentService.letterNumberForCode(orgId, req.body?.code, req.user.id));
+    } catch (error) { if (error.status) return res.status(error.status).json({ error: error.message }); next(error); }
 });
 
 // Helper — load the caller's org row and verify they're its admin.
@@ -146,14 +163,14 @@ router.get('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
             email: org.email || '',
             signatory: org.signatory || '',
             brand: org.brand || '',
-            npwp: org.npwp || '',
+            npwp: decryptField(org.npwp) || '',
             docNumbering: org.docNumbering || null,
             isCallerAdmin: org.adminUserId === req.user.id,
         });
     } catch (err) { next(err); }
 });
 
-router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.put('/my-info', requireAuth, requirePerm('settings', 'edit'), async (req, res, next) => {
     try {
         const org = await loadCallerOrgIfAdmin(req, res);
         if (!org) return;
@@ -162,6 +179,7 @@ router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
         for (const k of allowed) {
             if (req.body[k] !== undefined) patch[k] = req.body[k];
         }
+        if (patch.npwp !== undefined) patch.npwp = encryptField(String(patch.npwp || '').trim().slice(0, 30) || null);  // AES-256-GCM at rest
         // If name changes, also refresh name_normalized so soft-dup checks stay correct.
         if (patch.name) {
             patch.nameNormalized = String(patch.name).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -180,7 +198,7 @@ router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
             email: updated.email || '',
             signatory: updated.signatory || '',
             brand: updated.brand || '',
-            npwp: updated.npwp || '',
+            npwp: decryptField(updated.npwp) || '',
             docNumbering: updated.docNumbering || null,
             message: 'Informasi perusahaan tersimpan.',
         });
@@ -188,7 +206,7 @@ router.put('/my-info', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), 
 });
 
 // GET /api/orgs/my-invite-code
-router.get('/my-invite-code', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.get('/my-invite-code', requireAuth, requireAnyPerm('users.create', 'settings.view'), async (req, res, next) => {
     try {
         const org = await loadCallerOrgIfAdmin(req, res);
         if (!org) return;
@@ -202,7 +220,7 @@ router.get('/my-invite-code', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTIC
 });
 
 // POST /api/orgs/my-invite-code/resend
-router.post('/my-invite-code/resend', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.post('/my-invite-code/resend', requireAuth, requirePerm('users', 'create'), async (req, res, next) => {
     try {
         const org = await loadCallerOrgIfAdmin(req, res);
         if (!org) return;
@@ -220,7 +238,7 @@ router.post('/my-invite-code/resend', requireAuth, requireRole(ROLE_GROUPS.ANY_A
 });
 
 // POST /api/orgs/my-invite-code/rotate
-router.post('/my-invite-code/rotate', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.post('/my-invite-code/rotate', requireAuth, requirePerm('users', 'create'), async (req, res, next) => {
     try {
         const org = await loadCallerOrgIfAdmin(req, res);
         if (!org) return;
@@ -288,6 +306,7 @@ router.post('/admin', ...SA, async (req, res, next) => {
             name: String(name).trim(), nameNormalized: normalized, isActive: true,
             parentAgencyId: parent, address: address || null, phone1: phone1 || null, email: email || null,
         }).returning();
+        if (parent) await ensureParentLink(row.id, parent, req.user.id);
         res.status(201).json(row);
     } catch (err) { next(err); }
 });
@@ -307,6 +326,15 @@ router.put('/:id/admin', ...SA, async (req, res, next) => {
         }
         const [row] = await db.update(organizations).set(patch).where(eq(organizations.id, id)).returning();
         if (!row) return res.status(404).json({ error: 'Organisasi tidak ditemukan.' });
+        if (patch.parentAgencyId) await ensureParentLink(row.id, patch.parentAgencyId, req.user.id);
+        if (req.body.parentAgencyId !== undefined) {
+            // Agency ↔ client change: members' account type follows the organisation.
+            const type = row.parentAgencyId == null ? 'agency' : 'client';
+            const moved = await db.update(userTable).set({ accountType: type, updatedAt: new Date() })
+                .where(and(eq(userTable.organizationId, row.id), sql`${userTable.role} <> 'superadmin'`)).returning({ id: userTable.id });
+            forgetOrgType(row.id);
+            moved.forEach((m) => invalidateUser(m.id));
+        }
         res.json(row);
     } catch (err) { next(err); }
 });

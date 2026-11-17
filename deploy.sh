@@ -21,7 +21,8 @@ if [ "$1" = "--migrate" ]; then
 fi
 
 echo "[deploy] building web…"
-cd ../web && npm ci && npm run build
+# VITE_API_BASE must be the full https origin, or the live site "fails to fetch".
+cd ../web && npm ci && VITE_API_BASE="${VITE_API_BASE:-https://dsrappai.com}" npm run build
 
 echo "[deploy] reloading API…"
 pm2 reload dsr-api

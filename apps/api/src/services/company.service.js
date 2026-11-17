@@ -21,9 +21,27 @@
 import { db } from '../db/index.js';
 import { organizations } from '../db/schema.js';
 import { eq, ilike, or, asc, desc, sql, and } from 'drizzle-orm';
-import { buildScopeConditions } from '../middleware/scope.js';
 import { findAvailableDisplayId } from './display-id.service.js';
-import { resolveDefaultAgencyId } from './relationship.service.js';
+import { resolveDefaultAgencyId, ensureParentLink } from './relationship.service.js';
+
+/**
+ * Visibility of client companies (organizations rows) for the address book.
+ *   superadmin / no user → everything
+ *   demo                 → read-only view as before (no writes via RBAC)
+ *   client account       → its own organization only
+ *   agency account       → orgs whose parent_agency_id = my agency, plus
+ *                          orgs linked through client_agency_links (active)
+ * Exported for the by-id route guard.
+ */
+export function companyScope(user) {
+    if (!user || user.role === 'superadmin' || user.isDemo === true) return [];
+    const orgId = user.organizationId;
+    if (!orgId) return [sql`false`];
+    const isClient = user.accountType === 'client' || user.role === 'client' || user.role === 'client_admin';
+    if (isClient) return [eq(organizations.id, orgId)];
+    return [sql`(${organizations.parentAgencyId} = ${orgId} OR ${organizations.id} IN (
+        SELECT client_org_id FROM client_agency_links WHERE agency_org_id = ${orgId} AND status = 'active'))`];
+}
 
 // Convert an organizations row → legacy companies shape for frontend.
 function toCompanyShape(o) {
@@ -66,15 +84,9 @@ export const companyService = {
             ));
         }
 
-        // Scope by agency — every org with parent_agency_id = caller's agency
-        // is visible. Agency's OWN org (where parent_agency_id IS NULL) is
-        // intentionally excluded from the address book.
-        const scopeConds = buildScopeConditions(scopeUser, {
-            organizationId: organizations.parentAgencyId,
-            isDemo: null,
-            createdBy: null,
-        });
-        conditions.push(...scopeConds);
+        // Scope: the caller's client companies only (see companyScope). Other
+        // agencies (top-level orgs) never appear in an agency's address book.
+        conditions.push(...companyScope(scopeUser));
 
         let query = db.select().from(organizations);
         let countQuery = db.select({ count: sql`count(*)` }).from(organizations);
@@ -94,15 +106,18 @@ export const companyService = {
         };
     },
 
-    async findById(id) {
-        const rows = await db.select().from(organizations).where(eq(organizations.id, Number(id))).limit(1);
+    async findById(id, scopeUser = null) {
+        const rows = await db.select().from(organizations)
+            .where(and(eq(organizations.id, Number(id)), ...companyScope(scopeUser))).limit(1);
         return toCompanyShape(rows[0]);
     },
 
-    async findByName(name) {
+    // scopeUser given → only a company the caller may see (Documents lookup).
+    // Without it (internal duplicate check) the whole table is searched.
+    async findByName(name, scopeUser = null) {
         if (!name) return null;
         const rows = await db.select().from(organizations)
-            .where(sql`LOWER(TRIM(${organizations.name})) = ${String(name).toLowerCase().trim()}`)
+            .where(and(sql`LOWER(TRIM(${organizations.name})) = ${String(name).toLowerCase().trim()}`, ...companyScope(scopeUser)))
             .limit(1);
         return toCompanyShape(rows[0]);
     },
@@ -135,6 +150,7 @@ export const companyService = {
             displayId,
             parentAgencyId,
         }).returning();
+        await ensureParentLink(result[0].id, parentAgencyId, data.createdBy || null);
         return toCompanyShape(result[0]);
     },
 

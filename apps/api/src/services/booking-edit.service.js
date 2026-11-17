@@ -25,10 +25,17 @@ import { orders, customers, invoices } from '../db/schema.js';
 import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 import { customerService } from './customer.service.js';
+import { invoiceService } from './invoice.service.js';
+import { booksAutoPost } from './books-autopost.service.js';
 
 const DAY_MS = 86400000;
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'active'];
 const STATUSES = ['pending', 'confirmed', 'active', 'completed', 'cancelled'];
+// Inline-editable fields (everything else in Rekap Order is auto-filled).
+const ROW_FIELDS = new Set(['carId', 'driverId', 'package', 'destination', 'pickupDate', 'returnDate', 'pickupLocation',
+    'totalPrice', 'overnightNights', 'overtimeHours', 'bailout', 'status', 'notes']);
+const CUSTOMER_FIELDS = new Set(['customerName', 'customerType', 'companyName', 'customerPhone']);
+const INVOICE_FIELDS = new Set(['invoiceSentDate', 'invoicePaidDate']);
 
 function httpError(status, message, extra = {}) {
     const e = new Error(message);
@@ -43,7 +50,10 @@ const daySpan = (a, b) => Math.max(1, Math.round((startOfDay(b) - startOfDay(a))
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); }
 
 export const bookingEditService = {
-    async update({ customer, items, force = false }, user) {
+    // validateFields (Set, optional): when given, only those fields' required
+    // checks run — used by single-cell inline edits so editing e.g. Catatan on a
+    // legacy row without a driver isn't blocked by unrelated empty fields.
+    async update({ customer, items, force = false, validateFields = null }, user) {
         if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'Tidak ada kendaraan untuk disimpan.');
         const ids = items.map((i) => Number(i.orderId));
 
@@ -67,7 +77,10 @@ export const bookingEditService = {
             const label = `Kendaraan #${idx + 1}`;
             const p = { updatedAt: new Date() };
             const req = { carId: 'Mobil', driverId: 'Driver', package: 'Paket', destination: 'Tujuan', pickupDate: 'Tgl Mulai', returnDate: 'Tgl Selesai' };
-            for (const [k, name] of Object.entries(req)) if (blank(it[k])) errors.push(`${label}: ${name} wajib diisi`);
+            for (const [k, name] of Object.entries(req)) {
+                if (validateFields && !validateFields.has(k)) continue;
+                if (blank(it[k])) errors.push(`${label}: ${name} wajib diisi`);
+            }
 
             const pick = toDate(it.pickupDate), ret = toDate(it.returnDate);
             if (pick && ret && ret < pick) errors.push(`${label}: Tgl Selesai tidak boleh sebelum Tgl Mulai`);
@@ -100,8 +113,9 @@ export const bookingEditService = {
             const name = String(customer.customerName || '').trim();
             const type = customer.customerType === 'company' ? 'company' : 'private';
             const company = type === 'company' ? String(customer.companyName || '').trim() : '';
-            if (!name) errors.push('Nama wajib diisi');
-            if (type === 'company' && !company) errors.push('Company Name wajib diisi untuk pelanggan perusahaan');
+            const vf = (k) => !validateFields || validateFields.has(k);
+            if (!name && vf('customerName')) errors.push('Nama wajib diisi');
+            if (type === 'company' && !company && (vf('companyName') || vf('customerType'))) errors.push('Company Name wajib diisi untuk pelanggan perusahaan');
             customerPatch = { name, type, company, phone: String(customer.customerPhone || '').trim() };
         }
         if (errors.length) throw httpError(400, errors.join('; '), { details: errors });
@@ -158,6 +172,7 @@ export const bookingEditService = {
         }
 
         // ── Apply atomically ──────────────────────────────────────────────
+        const invIds = [...new Set(rows.map((r) => r.invoiceId).filter(Boolean))];
         const updated = await db.transaction(async (tx) => {
             const out = [];
             for (const { id, patch } of patches) {
@@ -171,7 +186,6 @@ export const bookingEditService = {
                     .where(eq(orders.orderNumber, orderNumber));
             }
             // Keep linked invoice totals in step with price edits.
-            const invIds = [...new Set(rows.map((r) => r.invoiceId).filter(Boolean))];
             if (invIds.length) {
                 await tx.execute(sql`
                     UPDATE invoices i SET total_amount = s.t, updated_at = NOW()
@@ -181,7 +195,160 @@ export const bookingEditService = {
             }
             return out;
         });
+        // Books: re-post receivables whose amount / vehicles changed (best-effort).
+        if (invIds.length) await booksAutoPost.afterInvoices(invIds, { userId: user?.id || null });
         return { orderNumber, updated: updated.length };
+    },
+
+    /**
+     * Inline (single-cell) edit from Rekap Order.
+     *   orderIds   one row, or every row of a booking (group header cell)
+     *   field      one of ROW_FIELDS / CUSTOMER_FIELDS / INVOICE_FIELDS
+     *   expectedUpdatedAt  optional ISO of the row as the user saw it → 409
+     *              when someone else changed it meanwhile
+     * Auto-filled columns (No., Kode, Plat, Jumlah Hari, No. Invoice, Due Date,
+     * Status Invoice, Dibuat Oleh) are not editable and are rejected here too.
+     */
+    async updateField(user, { orderIds, field, value, expectedUpdatedAt, force = false }) {
+        const ids = [...new Set((orderIds || []).map(Number).filter(Boolean))];
+        if (!ids.length) throw httpError(400, 'orderIds wajib.');
+        const isRow = ROW_FIELDS.has(field), isCust = CUSTOMER_FIELDS.has(field), isInv = INVOICE_FIELDS.has(field);
+        if (!isRow && !isCust && !isInv) throw httpError(400, `Kolom "${field}" tidak dapat diedit (terisi otomatis).`);
+
+        const scopeConds = buildScopeConditions(user, {
+            organizationId: orders.organizationId, isDemo: orders.isDemo,
+            createdBy: orders.createdBy, claimedByAgencyId: orders.claimedByAgencyId,
+        });
+        const rows = await db.select().from(orders).where(and(inArray(orders.id, ids), ...scopeConds));
+        if (rows.length !== ids.length) throw httpError(404, 'Order tidak ditemukan atau di luar akses Anda.');
+        if (expectedUpdatedAt && ids.length === 1) {
+            const cur = rows[0].updatedAt ? new Date(rows[0].updatedAt).getTime() : 0;
+            const exp = new Date(expectedUpdatedAt).getTime();
+            if (cur && exp && cur - exp > 1000) {
+                throw httpError(409, 'Data sudah diubah pengguna lain. Muat ulang halaman lalu coba lagi.', { code: 'STALE' });
+            }
+        }
+
+        if (isInv) {
+            const invIds = [...new Set(rows.map((r) => r.invoiceId).filter(Boolean))];
+            if (!invIds.length) throw httpError(400, 'Order ini belum punya invoice — buat dari menu Dokumen.');
+            const key = field === 'invoiceSentDate' ? 'sentDate' : 'paidDate';
+            for (const id of invIds) await invoiceService.update(id, { [key]: value || null });
+            return { updated: rows.length, invoices: invIds.length };
+        }
+
+        // Current values → full item, then overwrite the one edited field.
+        const asIso = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+        const items = rows.map((r) => {
+            const it = {
+                orderId: r.id, carId: r.carId, driverId: r.driverId, package: r.package, destination: r.destination,
+                pickupDate: asIso(r.pickupDate), returnDate: asIso(r.returnDate), pickupLocation: r.pickupLocation,
+                totalPrice: r.totalPrice, overnightNights: r.overnightNights, overtimeHours: r.overtimeHours,
+                bailout: r.bailout, status: r.status, notes: r.notes,
+            };
+            if (isRow) it[field] = value;
+            return it;
+        });
+        let customer;
+        if (isCust) {
+            const [c] = await db.select().from(customers).where(eq(customers.id, rows[0].customerId)).limit(1);
+            customer = {
+                customerName: rows[0].customerName || c?.name || '',
+                customerType: c?.customerType || 'private',
+                companyName: c?.companyName || '',
+                customerPhone: c?.phone || c?.whatsapp || '',
+                [field]: value ?? '',
+            };
+            // Typing a company name on a private customer makes it a company
+            // customer; clearing it makes it private again.
+            if (field === 'companyName') customer.customerType = String(value || '').trim() ? 'company' : 'private';
+            if (field === 'customerType' && value !== 'company') customer.companyName = '';
+        }
+        return this.update({ customer, items, force, validateFields: new Set([field]) }, user);
+    },
+
+    // Row edit in Rekap: several columns of one row saved together.
+    // changes = [{ orderIds, field, value }] — per-car fields target the row,
+    // booking-level customer fields target every row of the booking. All row
+    // and customer changes go through ONE update() (one transaction, one
+    // schedule check), so the row is never half-saved. Invoice dates (other
+    // table) are applied after that succeeds.
+    async updateFields(user, { changes, expectedUpdatedAt, force = false }) {
+        const list = (changes || []).filter((c) => c && c.field);
+        if (!list.length) throw httpError(400, 'Tidak ada perubahan.');
+        const seen = new Set();
+        for (const c of list) {
+            if (!ROW_FIELDS.has(c.field) && !CUSTOMER_FIELDS.has(c.field) && !INVOICE_FIELDS.has(c.field)) {
+                throw httpError(400, `Kolom "${c.field}" tidak dapat diedit (terisi otomatis).`);
+            }
+            if (seen.has(c.field)) throw httpError(400, `Kolom "${c.field}" dikirim dua kali.`);
+            seen.add(c.field);
+        }
+        const ids = [...new Set(list.flatMap((c) => (c.orderIds || []).map(Number).filter(Boolean)))];
+        if (!ids.length) throw httpError(400, 'orderIds wajib.');
+
+        const scopeConds = buildScopeConditions(user, {
+            organizationId: orders.organizationId, isDemo: orders.isDemo,
+            createdBy: orders.createdBy, claimedByAgencyId: orders.claimedByAgencyId,
+        });
+        const rows = await db.select().from(orders).where(and(inArray(orders.id, ids), ...scopeConds));
+        if (rows.length !== ids.length) throw httpError(404, 'Order tidak ditemukan atau di luar akses Anda.');
+        if (new Set(rows.map((r) => r.orderNumber)).size > 1) throw httpError(400, 'Edit baris hanya untuk satu booking.');
+        if (expectedUpdatedAt) {
+            const exp = new Date(expectedUpdatedAt).getTime();
+            const newest = Math.max(...rows.map((r) => (r.updatedAt ? new Date(r.updatedAt).getTime() : 0)));
+            if (newest && exp && newest - exp > 1000) {
+                throw httpError(409, 'Data sudah diubah pengguna lain. Muat ulang halaman lalu coba lagi.', { code: 'STALE' });
+            }
+        }
+
+        const rowChanges = list.filter((c) => ROW_FIELDS.has(c.field));
+        const custChanges = list.filter((c) => CUSTOMER_FIELDS.has(c.field));
+        const invChanges = list.filter((c) => INVOICE_FIELDS.has(c.field));
+        let result = { updated: 0 };
+
+        if (rowChanges.length || custChanges.length) {
+            const asIso = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+            const items = rows.map((r) => {
+                const it = {
+                    orderId: r.id, carId: r.carId, driverId: r.driverId, package: r.package, destination: r.destination,
+                    pickupDate: asIso(r.pickupDate), returnDate: asIso(r.returnDate), pickupLocation: r.pickupLocation,
+                    totalPrice: r.totalPrice, overnightNights: r.overnightNights, overtimeHours: r.overtimeHours,
+                    bailout: r.bailout, status: r.status, notes: r.notes,
+                };
+                for (const c of rowChanges) {
+                    if ((c.orderIds || []).map(Number).includes(r.id)) it[c.field] = c.value ?? null;
+                }
+                return it;
+            });
+            let customer;
+            if (custChanges.length) {
+                const [c] = await db.select().from(customers).where(eq(customers.id, rows[0].customerId)).limit(1);
+                customer = {
+                    customerName: rows[0].customerName || c?.name || '',
+                    customerType: c?.customerType || 'private',
+                    companyName: c?.companyName || '',
+                    customerPhone: c?.phone || c?.whatsapp || '',
+                };
+                for (const ch of custChanges) customer[ch.field] = ch.value ?? '';
+                if (custChanges.some((ch) => ch.field === 'companyName')) {
+                    customer.customerType = String(customer.companyName || '').trim() ? 'company' : 'private';
+                }
+                if (customer.customerType !== 'company') customer.companyName = '';
+            }
+            result = await this.update({ customer, items, force, validateFields: new Set(list.map((c) => c.field)) }, user);
+        }
+
+        if (invChanges.length) {
+            for (const ch of invChanges) {
+                const target = rows.filter((r) => (ch.orderIds || []).map(Number).includes(r.id));
+                const invIds = [...new Set(target.map((r) => r.invoiceId).filter(Boolean))];
+                if (!invIds.length) throw httpError(400, 'Order ini belum punya invoice — buat dari menu Dokumen.');
+                const key = ch.field === 'invoiceSentDate' ? 'sentDate' : 'paidDate';
+                for (const id of invIds) await invoiceService.update(id, { [key]: ch.value || null });
+            }
+        }
+        return { ...result, fields: list.length };
     },
 };
 

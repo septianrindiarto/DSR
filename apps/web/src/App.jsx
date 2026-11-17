@@ -2,8 +2,9 @@ import { useState, lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { LanguageProvider, useLanguage } from "./context/LanguageContext";
-import { canAccess, FEATURES } from "./lib/permissions";
+import { canAccess, FEATURES, isDriverOnly } from "./lib/permissions";
 import RequestAccessModal from "./components/RequestAccessModal";
+import ApiActivityBar from "./components/ApiActivityBar";
 import LandingPage from "./pages/LandingPage";
 import AdminLogin from "./pages/AdminLogin";
 // Admin pages are code-split: each loads its own chunk on first visit, so the
@@ -23,6 +24,13 @@ const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const AdminAccessRequests = lazy(() => import("./pages/AdminAccessRequests"));
 const AdminClaimOrders = lazy(() => import("./pages/AdminClaimOrders"));
 const AdminOrganizations = lazy(() => import("./pages/AdminOrganizations"));
+const AdminPricing = lazy(() => import("./pages/AdminPricing"));
+const DriverApp = lazy(() => import("./pages/DriverApp"));
+const AdminFleetCare = lazy(() => import("./pages/AdminFleetCare"));
+// Interactive one-screen landing (trial at /v2 while the classic page stays at /).
+const LandingScene = lazy(() => import("./pages/LandingScene"));
+const AdminContractHub = lazy(() => import("./pages/AdminContractHub"));
+const AdminReports = lazy(() => import("./pages/AdminReports"));
 
 function PageSpinner() {
   return (
@@ -36,6 +44,7 @@ import CarDetail from "./pages/CarDetail";
 import NotFound from "./pages/NotFound";
 import WhatsAppFAB from "./components/WhatsAppFAB";
 import { ToastProvider } from "./components/Toast";
+import SessionGuard from "./components/SessionGuard";
 
 function ProtectedRoute({ children }) {
   const { user, loading, sessionExpired } = useAuth();
@@ -75,6 +84,8 @@ function RoleGate({ feature, children }) {
   const navigate = useNavigate();
   const [showRequestModal, setShowRequestModal] = useState(true);
 
+  // Driver accounts only have the driver app.
+  if (isDriverOnly(user) && feature !== FEATURES.DRIVERAPP) return <Navigate to="/driver" replace />;
   if (!canAccess(user, feature)) {
     return (
       <div className="min-h-screen bg-[#f8f5f5]">
@@ -121,11 +132,16 @@ function App() {
       <LanguageProvider>
         <AuthProvider>
           <ToastProvider>
+          {/* Top loading bar while any request is running (saves show at once). */}
+          <ApiActivityBar />
+          {/* 15-minute idle timeout: warning, keep-alive, expired flag (owner 2026-11-13). */}
+          <SessionGuard />
           {/* WhatsApp FAB visible on ALL pages */}
           <WhatsAppFAB />
           <Suspense fallback={<PageSpinner />}>
           <Routes>
             <Route path="/" element={<LandingPage />} />
+            <Route path="/v2" element={<LandingScene />} />
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/admin/dashboard" element={<Guarded feature={FEATURES.DASHBOARD}><AdminDashboard /></Guarded>} />
@@ -138,6 +154,13 @@ function App() {
             <Route path="/admin/finance" element={<Guarded feature={FEATURES.FINANCE}><AdminFinance /></Guarded>} />
             <Route path="/admin/documents" element={<Guarded feature={FEATURES.DOCUMENTS}><AdminDocuments /></Guarded>} />
             <Route path="/admin/settings" element={<Guarded feature={FEATURES.SETTINGS}><AdminSettings /></Guarded>} />
+            <Route path="/admin/pricing" element={<Guarded feature={FEATURES.PRICING}><AdminPricing /></Guarded>} />
+            <Route path="/admin/corporate" element={<Navigate to="/admin/reports" replace />} />
+            <Route path="/admin/reports" element={<Guarded feature={FEATURES.REPORTS}><AdminReports /></Guarded>} />
+            <Route path="/driver" element={<Guarded feature={FEATURES.DRIVERAPP}><DriverApp /></Guarded>} />
+            <Route path="/admin/contracts" element={<Guarded feature={FEATURES.CONTRACTHUB}><AdminContractHub /></Guarded>} />
+            <Route path="/admin/fleet-care" element={<Guarded feature={FEATURES.FLEETCARE}><AdminFleetCare /></Guarded>} />
+            <Route path="/admin/ops-recap" element={<Navigate to="/admin/contracts?tab=ops" replace />} />
             <Route path="/admin/users" element={<Guarded feature={FEATURES.USERS}><AdminUsers /></Guarded>} />
             <Route path="/admin/access-requests" element={<Guarded feature={FEATURES.USERS}><AdminAccessRequests /></Guarded>} />
             <Route path="/admin/claim-orders" element={<Guarded feature={FEATURES.ACCESS_REQUESTS}><AdminClaimOrders /></Guarded>} />

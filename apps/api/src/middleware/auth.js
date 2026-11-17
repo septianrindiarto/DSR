@@ -1,5 +1,7 @@
 import { auth } from '../auth.js';
 import { fromNodeHeaders } from 'better-auth/node';
+import { effectiveAccountType } from '../services/access.service.js';
+import { sessionService } from '../services/session.service.js';
 
 /**
  * Middleware to require authentication.
@@ -12,11 +14,24 @@ export async function requireAuth(req, res, next) {
         });
 
         if (!session) {
+            // Tell the browser why (idle timeout / taken over elsewhere) when we know.
+            const end = await sessionService.endedReason(req.headers.cookie).catch(() => null);
+            if (end) return res.status(401).json(sessionService.endedBody(end));
             return res.status(401).json({ error: 'Unauthorized — please login' });
         }
+        // Deactivated accounts are blocked on EVERY route (was only Users).
+        if (session.user?.isActive === false) {
+            return res.status(403).json({ error: 'Akun Anda telah dinonaktifkan. Hubungi administrator.', code: 'ACCOUNT_INACTIVE' });
+        }
+        // 15-minute idle timeout (owner 2026-11-13); X-Background polling is not activity.
+        const g = await sessionService.guard(req, session);
+        if (!g.ok) return res.status(401).json(sessionService.endedBody({ reason: 'expired' }));
+        req.sessionPolicy = g.policy;
 
         req.user = session.user;
         req.session = session.session;
+        // Account type follows the organisation (stored value can be stale).
+        req.user.accountType = await effectiveAccountType(req.user);
         next();
     } catch (error) {
         console.error('Auth middleware error:', error);
@@ -36,9 +51,10 @@ export async function optionalAuth(req, res, next) {
         const session = await auth.api.getSession({
             headers: fromNodeHeaders(req.headers),
         });
-        if (session) {
+        if (session && session.user?.isActive !== false && (await sessionService.guard(req, session)).ok) {
             req.user = session.user;
             req.session = session.session;
+            req.user.accountType = await effectiveAccountType(req.user);
         }
     } catch {
         // ignore — treat as anonymous

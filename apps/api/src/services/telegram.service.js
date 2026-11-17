@@ -186,7 +186,14 @@ export function buildOrderMessage({ order, orders, car, carsById, customer, sour
         lines.push('');
         lines.push(`<b>Nama:</b> ${customerLine}`);
         lines.push(`<b>Perusahaan:</b> ${companyLine}`);
-        if (phone) {
+        // Data minimisation (UU PDP): TELEGRAM_MASK_CONTACT=true sends only a
+        // masked number (e.g. 0812•••••789) and no WhatsApp link — the full
+        // contact stays inside the app (Rekap Order).
+        const maskContact = process.env.TELEGRAM_MASK_CONTACT === 'true';
+        if (phone && maskContact) {
+            const d = String(phone).replace(/\s+/g, '');
+            lines.push(`<b>Kontak:</b> ${esc(d.length > 7 ? `${d.slice(0, 4)}•••••${d.slice(-3)}` : '•••')} (lihat di aplikasi)`);
+        } else if (phone) {
             if (waPath) {
                 lines.push(`<b>Kontak:</b> ${esc(phone)} - <a href="https://wa.me/${waPath}">Buka WhatsApp</a>`);
             } else {

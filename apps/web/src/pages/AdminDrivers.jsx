@@ -1,27 +1,28 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr, API_BASE } from "../lib/api";
+import { api, apiCache, swr } from "../lib/api";
 import { useToast } from '../components/Toast';
+import InlineEdit from "../components/InlineEdit";
 import TablePagination, { usePagination } from "../components/TablePagination";
 import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs } from "../lib/dataFormats";
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
 
+import AsyncButton from "../components/AsyncButton";
 const statusColors = {
   active: "bg-green-100 text-green-700",
   inactive: "bg-slate-100 text-slate-600",
   suspended: "bg-red-100 text-red-700",
 };
 
-// Resolve `/uploads/...` paths to a fully-qualified URL so anchor tags work
-// even when the web app runs on a different origin than the API (dev: web on
-// :5173, API on :5000).
-const API_ORIGIN = API_BASE;
-const docHref = (url) => (url ? (url.startsWith("http") ? url : `${API_ORIGIN}${url}`) : null);
+// Driver documents (SIM/KTP/photo) are private: opened through an
+// authenticated request (api.drivers.openDocument), never a public link.
 
 const emptyForm = {
-  name: "", phone: "", licenseNumber: "", licenseExpiry: "",
+  name: "", phone: "", licenseNumber: "", licenseExpiry: "", joinDate: "",
   status: "active", address: "", notes: "",
 };
 
@@ -30,6 +31,12 @@ const emptyFiles = { licenseDoc: null, idCard: null, photo: null };
 export default function AdminDrivers() {
   const { t } = useLanguage();
   const toast = useToast();
+  // RBAC v2 — hide what the server would refuse.
+  const { user: authUser } = useAuth();
+  const canCreate = can(authUser, "drivers", "create");
+  const canEdit = can(authUser, "drivers", "edit");
+  const [appDriver, setAppDriver] = useState(null);   // driver app login modal
+  const canDelete = can(authUser, "drivers", "delete");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("createdAt");
@@ -88,7 +95,7 @@ export default function AdminDrivers() {
   }
 
   function openAdd() {
-    setForm(emptyForm);
+    setForm({ ...emptyForm, joinDate: new Date().toLocaleDateString("en-CA") }); // default: today
     setEditingId(null);
     setFiles(emptyFiles);
     setExistingDocs({ licenseDocUrl: null, idCardUrl: null, photoUrl: null });
@@ -102,6 +109,7 @@ export default function AdminDrivers() {
       phone: driver.phone,
       licenseNumber: driver.licenseNumber || "",
       licenseExpiry: driver.licenseExpiry ? driver.licenseExpiry.split("T")[0] : "",
+      joinDate: driver.joinDate || "",
       status: driver.status,
       address: driver.address || "",
       notes: driver.notes || "",
@@ -115,6 +123,16 @@ export default function AdminDrivers() {
     });
     setActiveTab("data");
     setShowModal(true);
+  }
+
+  // Inline (hover ✏️) save — one field at a time.
+  async function saveDriver(driver, patch) {
+    try {
+      await api.drivers.update(driver.id, patch);
+      toast.success(t("inlineSaved"));
+      apiCache.invalidate("drivers:");
+      loadDrivers();
+    } catch (e) { toast.error(e.message); throw e; }
   }
 
   async function handleSave(e) {
@@ -171,7 +189,8 @@ export default function AdminDrivers() {
   }
 
   // ── Field order for headerless import ──────────────────────────────────
-  const IMPORT_FIELDS = ["name", "phone", "licenseNumber", "licenseExpiry", "status", "address", "notes"];
+  // joinDate appended LAST so existing header-less files keep their column order.
+  const IMPORT_FIELDS = ["name", "phone", "licenseNumber", "licenseExpiry", "status", "address", "notes", "joinDate"];
   const IMPORT_FIELD_ORDER_MSG =
     "Urutan kolom yang diharapkan:\n" +
     "  1. name           – Nama driver (wajib)\n" +
@@ -180,7 +199,8 @@ export default function AdminDrivers() {
     "  4. licenseExpiry  – Masa berlaku SIM (YYYY-MM-DD)\n" +
     "  5. status         – active / inactive / suspended\n" +
     "  6. address        – Alamat\n" +
-    "  7. notes          – Catatan\n\n" +
+    "  7. notes          – Catatan\n" +
+    "  8. joinDate       – Tanggal bergabung (YYYY-MM-DD, kosong = hari ini)\n\n" +
     "File tidak boleh mengandung baris header.";
   // Add this status normalizer map near IMPORT_FIELDS constant
   const STATUS_MAP = {
@@ -247,7 +267,7 @@ export default function AdminDrivers() {
       if (driver.photoUrl) docs.push("Foto");
       const parts = [
         driver.name, driver.phone, driver.licenseNumber,
-        formatDate(driver.licenseExpiry),
+        formatDate(driver.licenseExpiry), formatDate(driver.joinDate),
         driver.status, driver.status ? t(driver.status) : "",
         driver.address, driver.notes,
         docs.join(" "),
@@ -307,13 +327,14 @@ export default function AdminDrivers() {
             Export
           </button>
           <button
+            hidden={!canCreate}
             onClick={() => setShowImport(true)}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors cursor-pointer"
           >
             <span className="material-symbols-outlined text-[18px]">upload</span>
             Import
           </button>
-          <button onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors shadow-sm cursor-pointer">
+          <button hidden={!canCreate} onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors shadow-sm cursor-pointer">
             <span className="material-symbols-outlined text-[20px]">person_add</span>
             {t("addDriver")}
           </button>
@@ -390,9 +411,9 @@ export default function AdminDrivers() {
           <span className="text-sm font-semibold text-slate-700">{selectedDrivers.size} driver dipilih</span>
           <span className="text-slate-300">·</span>
           <span className="text-xs text-slate-500">Ubah status:</span>
-          <button onClick={() => handleBulkStatus("active")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("active")}</button>
-          <button onClick={() => handleBulkStatus("inactive")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 cursor-pointer">{t("inactive")}</button>
-          <button onClick={() => handleBulkStatus("suspended")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">{t("suspended")}</button>
+          <AsyncButton onClick={() => handleBulkStatus("active")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("active")}</AsyncButton>
+          <AsyncButton onClick={() => handleBulkStatus("inactive")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 cursor-pointer">{t("inactive")}</AsyncButton>
+          <AsyncButton onClick={() => handleBulkStatus("suspended")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">{t("suspended")}</AsyncButton>
           <button onClick={() => setSelectedDrivers(new Set())} className="ml-auto text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Bersihkan</button>
         </div>
       )}
@@ -421,6 +442,9 @@ export default function AdminDrivers() {
                 <th className="px-3 py-3 font-semibold text-center align-middle cursor-pointer select-none" onClick={() => handleSort("licenseExpiry")}>
                   <span className="inline-flex items-center justify-center gap-1 align-middle">{t("licenseExpiry")}<SortIcon field="licenseExpiry" /></span>
                 </th>
+                <th className="px-3 py-3 font-semibold text-center align-middle cursor-pointer select-none" onClick={() => handleSort("joinDate")}>
+                  <span className="inline-flex items-center justify-center gap-1 align-middle">{t("joinDate")}<SortIcon field="joinDate" /></span>
+                </th>
                 <th className="px-3 py-3 font-semibold text-center align-middle cursor-pointer select-none" onClick={() => handleSort("status")}>
                   <span className="inline-flex items-center justify-center gap-1 align-middle">{t("status")}<SortIcon field="status" /></span>
                 </th>
@@ -445,18 +469,24 @@ export default function AdminDrivers() {
                     {(page - 1) * pageSize + idx + 1}
                   </td>
                   <td className="px-3 py-3 text-left align-middle">
-                    <p className="font-medium text-slate-900">{driver.name}</p>
+                    <p className="font-medium text-slate-900"><InlineEdit disabled={!canEdit} value={driver.name} onSave={(v) => saveDriver(driver, { name: v || driver.name })} /></p>
                   </td>
-                  <td className="px-3 py-3 text-left align-middle text-slate-600">{driver.phone}</td>
-                  <td className="px-3 py-3 text-left align-middle text-slate-600 font-mono text-xs">{driver.licenseNumber || "-"}</td>
-                  <td className="px-3 py-3 text-left align-middle text-slate-600">{formatDate(driver.licenseExpiry)}</td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={driver.phone || ""} display={driver.phone || "-"} onSave={(v) => saveDriver(driver, { phone: v || driver.phone })} /></td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600 font-mono text-xs"><InlineEdit disabled={!canEdit} value={driver.licenseNumber || ""} display={driver.licenseNumber || "-"} onSave={(v) => saveDriver(driver, { licenseNumber: v || null })} /></td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={driver.licenseExpiry || ""} type="date" display={formatDate(driver.licenseExpiry)} onSave={(v) => saveDriver(driver, { licenseExpiry: v || null })} /></td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600">
+                    <InlineEdit disabled={!canEdit} value={driver.joinDate || ""} type="date"
+                      display={driver.joinDate ? formatDate(driver.joinDate) : <span className="text-slate-400" title={t("joinDateFallback")}>≈ {formatDate(driver.createdAt)}</span>}
+                      onSave={(v) => saveDriver(driver, { joinDate: v || null })} />
+                  </td>
                   <td className="px-3 py-3 text-left align-middle">
-                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[driver.status]}`}>
-                      {t(driver.status)}
-                    </span>
+                    <InlineEdit disabled={!canEdit} value={driver.status} type="select" options={["active", "inactive", "suspended"].map((v) => ({ value: v, label: t(v) }))}
+                      onSave={(v) => saveDriver(driver, { status: v })}
+                      display={<span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[driver.status]}`}>{t(driver.status)}</span>} />
                   </td>
                   <td className="px-3 py-3 text-left align-middle text-slate-600 text-xs max-w-[220px]" title={driver.address || ""}>
-                    <p className="line-clamp-2">{driver.address || "-"}</p>
+                    <InlineEdit disabled={!canEdit} value={driver.address || ""} type="textarea" onSave={(v) => saveDriver(driver, { address: v || null })}
+                      display={<p className="line-clamp-2">{driver.address || "-"}</p>} />
                   </td>
                   <td className="px-3 py-3 text-left align-middle">
                     <div className="flex gap-1">
@@ -470,18 +500,21 @@ export default function AdminDrivers() {
                   </td>
                   <td className="px-3 py-3 text-center align-middle">
                     <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => openEdit(driver)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer" title={t("edit")}>
+                      <button hidden={!canEdit} onClick={() => openEdit(driver)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer" title={t("edit")}>
                         <span className="material-symbols-outlined text-[18px]">edit</span>
                       </button>
-                      <button onClick={() => handleDelete(driver.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer" title={t("delete")}>
-                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      <button hidden={!canEdit} onClick={() => setAppDriver(driver)} className={`p-1.5 rounded-lg hover:bg-emerald-50 cursor-pointer ${driver.userId ? "text-emerald-600" : "text-slate-400"}`} title={t("drv_access")}>
+                        <span className="material-symbols-outlined text-[18px]">phone_android</span>
                       </button>
+                      <AsyncButton hidden={!canDelete} onClick={() => handleDelete(driver.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer" title={t("delete")}>
+                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      </AsyncButton>
                     </div>
                   </td>
                 </tr>
               ))}
               {filteredDrivers.length === 0 && (
-                <tr><td colSpan={10} className="px-5 py-12 text-center text-slate-400">
+                <tr><td colSpan={11} className="px-5 py-12 text-center text-slate-400">
                   {loading ? (
                     <span className="inline-flex items-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>
@@ -550,6 +583,11 @@ export default function AdminDrivers() {
                       <input type="date" value={form.licenseExpiry} onChange={(e) => setForm({ ...form, licenseExpiry: e.target.value })}
                         className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
                     </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">{t("joinDate")}</label>
+                      <input type="date" value={form.joinDate || ""} onChange={(e) => setForm({ ...form, joinDate: e.target.value })}
+                        className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">{t("status")}</label>
@@ -584,6 +622,7 @@ export default function AdminDrivers() {
                     field="licenseDoc"
                     file={files.licenseDoc}
                     existingUrl={existingDocs.licenseDocUrl}
+                    onView={() => api.drivers.openDocument(editingId, "licenseDoc").catch((e) => toast.error(e.message))}
                     onPick={(f) => setFiles(prev => ({ ...prev, licenseDoc: f }))}
                   />
                   <DocField
@@ -592,6 +631,7 @@ export default function AdminDrivers() {
                     field="idCard"
                     file={files.idCard}
                     existingUrl={existingDocs.idCardUrl}
+                    onView={() => api.drivers.openDocument(editingId, "idCard").catch((e) => toast.error(e.message))}
                     onPick={(f) => setFiles(prev => ({ ...prev, idCard: f }))}
                   />
                   <DocField
@@ -600,6 +640,7 @@ export default function AdminDrivers() {
                     field="photo"
                     file={files.photo}
                     existingUrl={existingDocs.photoUrl}
+                    onView={() => api.drivers.openDocument(editingId, "photo").catch((e) => toast.error(e.message))}
                     onPick={(f) => setFiles(prev => ({ ...prev, photo: f }))}
                   />
                   {!editingId && (
@@ -632,10 +673,11 @@ export default function AdminDrivers() {
           onClose={() => setShowExport(false)}
         />
       )}
+      {appDriver && <DriverAppAccessModal driver={appDriver} onClose={() => setAppDriver(null)} onChanged={() => { apiCache.invalidate("drivers:"); loadDrivers(); }} />}
       {showImport && (
         <SharedImportModal
           title="Import Data Driver"
-          hint="Kolom yang dikenali: name (wajib), phone, licenseNumber, licenseExpiry (YYYY-MM-DD), status (active/inactive/suspended), address, notes"
+          hint="Kolom yang dikenali: name (wajib), phone, licenseNumber, licenseExpiry (YYYY-MM-DD), joinDate (YYYY-MM-DD, kosong = hari ini), status (active/inactive/suspended), address, notes"
           importFn={runImport}
           onClose={() => setShowImport(false)}
           onSuccess={() => {}}
@@ -648,11 +690,9 @@ export default function AdminDrivers() {
 // ─── Document upload field ─────────────────────────────────────────────
 // Renders: a label, the existing file (if any) as a "View" link, and a file
 // picker. The chosen file is held in parent state and uploaded after save.
-function DocField({ label, icon, field, file, existingUrl, onPick }) {
+function DocField({ label, icon, field, file, existingUrl, onPick, onView }) {
   const inputId = `doc-${field}`;
-  const existingHref = existingUrl
-    ? (existingUrl.startsWith("http") ? existingUrl : `${API_BASE}${existingUrl}`)
-    : null;
+  const existingHref = !!existingUrl;
   return (
     <div className="border border-slate-200 rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
@@ -661,15 +701,14 @@ function DocField({ label, icon, field, file, existingUrl, onPick }) {
           <span className="text-sm font-medium text-slate-700">{label}</span>
         </div>
         {existingHref && !file && (
-          <a
-            href={existingHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+          <button
+            type="button"
+            onClick={onView}
+            className="text-xs text-primary hover:underline inline-flex items-center gap-1 cursor-pointer"
           >
             <span className="material-symbols-outlined text-[14px]">open_in_new</span>
             Lihat dokumen
-          </a>
+          </button>
         )}
       </div>
       <div className="flex items-center gap-2">
@@ -704,6 +743,58 @@ function DocField({ label, icon, field, file, existingUrl, onPick }) {
           >
             <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Driver app login (create / reset password / revoke) ────────────────────
+function DriverAppAccessModal({ driver, onClose, onChanged }) {
+  const { t } = useLanguage();
+  const toast = useToast();
+  const [info, setInfo] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => api.drivers.appAccess(driver.id).then(setInfo).catch((e) => toast.error(e.message));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []);
+  async function run(fn, okMsg) {
+    setBusy(true);
+    try { await fn(); toast.success(okMsg); setPassword(""); await load(); onChanged?.(); }
+    catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  }
+  const inp = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm";
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-slate-900">{t("drv_access")} · {driver.name}</h3>
+          <button onClick={onClose} className="text-slate-400 cursor-pointer"><span className="material-symbols-outlined">close</span></button>
+        </div>
+        {!info ? <p className="text-sm text-slate-400">{t("loading")}</p> : info.hasAccess ? (
+          <>
+            <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{t("drv_accessActive", { email: info.email })}</p>
+            <p className="text-xs text-slate-500">{t("drv_accessHowTo")}</p>
+            <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("drv_newPassword")}</span>
+              <input type="password" className={inp} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" /></label>
+            <div className="flex justify-between gap-2">
+              <button disabled={busy} onClick={() => confirm(t("drv_revokeConfirm")) && run(() => api.drivers.revokeAppAccess(driver.id), t("drv_revoked"))} className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm cursor-pointer disabled:opacity-50">{t("drv_revoke")}</button>
+              <button disabled={busy || password.length < 8} onClick={() => run(() => api.drivers.resetAppPassword(driver.id, password), t("drv_passwordReset"))} className="px-3 py-2 rounded-lg bg-primary text-white text-sm cursor-pointer disabled:opacity-50">{t("drv_resetPassword")}</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-xs text-slate-500">{t("drv_accessIntro")}</p>
+            <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">Email *</span>
+              <input type="email" className={inp} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="driver.nama@perusahaan.com" /></label>
+            <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("drv_newPassword")} *</span>
+              <input type="password" className={inp} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" /></label>
+            <div className="flex justify-end">
+              <button disabled={busy || !email || password.length < 8} onClick={() => run(() => api.drivers.grantAppAccess(driver.id, email, password), t("drv_granted"))} className="px-4 py-2 rounded-lg bg-primary text-white text-sm cursor-pointer disabled:opacity-50">{t("drv_grant")}</button>
+            </div>
+          </>
         )}
       </div>
     </div>

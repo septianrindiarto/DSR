@@ -9,15 +9,23 @@ import { relationshipService } from '../services/relationship.service.js';
 import { reserveIdempotency, recordIdempotency, releaseIdempotency } from '../services/idempotency.service.js';
 import { deriveInvoiceStatus } from '../services/invoice.service.js';
 import { bookingEditService } from '../services/booking-edit.service.js';
+import { denyClientOrderWrites, requireOrderAccess, requireBookingAccess, requireBodyOrderAccess } from '../middleware/order-access.js';
 import { requireAuth, requireAdmin, requireRole, optionalAuth } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
-import { activityLogger } from '../middleware/logger.js';
+import { activityLogger, auditRead } from '../middleware/logger.js';
 import { logActivity } from '../middleware/logger.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { orders, customers, drivers, cars, organizations } from '../db/schema.js';
-import { like, sql } from 'drizzle-orm';
+import { like, sql, and } from 'drizzle-orm';
+import { companyScope } from '../services/company.service.js';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
+import { getAccess, hasPerm } from '../services/access.service.js';
+import { pricingService } from '../services/pricing.service.js';
+import { corporateService } from '../services/corporate.service.js';
+import { driverAppService } from '../services/driver-app.service.js';
+import { sendPrivate } from '../services/private-files.js';
 
 const router = Router();
 
@@ -75,6 +83,7 @@ const publicOrderSchema = z.object({
     destination: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
     affiliateCode: z.string().nullable().optional(), // ?ref=<code> from the landing page
+    costCenter: z.string().max(100).nullable().optional(), // corporate portal: division / cost centre
 }).refine(
     (data) => data.customerType !== 'company' || (data.companyName && data.companyName.trim().length > 0),
     { message: 'Nama perusahaan wajib diisi untuk pemesanan perusahaan', path: ['companyName'] }
@@ -88,6 +97,12 @@ const publicOrderSchema = z.object({
 router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, res, next) => {
     let idemSig = null; // set once we know the booking identity; released on error
     try {
+        // Logged-in callers (dashboard booking form) need orders.create — this
+        // also stops an agency still in legal "setup" mode from taking orders.
+        // Anonymous landing-page bookings are unaffected.
+        if (req.user && !hasPerm(await getAccess(req.user.id), 'orders.create')) {
+            return res.status(403).json({ error: 'Anda tidak memiliki hak membuat order.', code: 'PERMISSION_DENIED', permission: 'orders.create' });
+        }
         const {
             fullName, whatsapp, customerType, companyName,
             pickupDate, returnDate, pickupLocation, destination, notes,
@@ -150,11 +165,26 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
         // customers.user_id here — that linkage is reserved for the
         // authenticated admin "Tambah Rekap" path.
         let targetOrgId = null;
-        if (companyName && companyName.trim()) {
+        // Corporate portal: a logged-in CLIENT company user always books for
+        // their own company (approval, cost centre and corporate rates apply).
+        const isClientUser = !!req.user && (req.user.accountType === 'client' || req.user.role === 'client' || req.user.role === 'client_admin');
+        let corp = null;
+        if (isClientUser && req.user.organizationId) {
+            targetOrgId = req.user.organizationId;
+            corp = await corporateService.bookingRules(req.user);
+            const cc = String(req.body.costCenter || '').trim();
+            if (corp.costCenterRequired && !cc) return res.status(400).json({ error: 'Pusat biaya (divisi) wajib dipilih.' });
+            if (cc && corp.costCenters.length && !corp.costCenters.some((c) => c.name === cc)) return res.status(400).json({ error: 'Pusat biaya tidak dikenal.' });
+        }
+        if (!targetOrgId && companyName && companyName.trim()) {
             const needle = companyName.toLowerCase().trim();
+            // A logged-in agency user may only tag its OWN clients (an order
+            // must never land in another agency's client portal); superadmin
+            // and anonymous visitors match by name as before.
+            const agencyStaff = req.user && req.user.role !== 'superadmin' && !isClientUser;
             const [matchedOrg] = await db.select({ id: organizations.id })
                 .from(organizations)
-                .where(sql`LOWER(TRIM(${organizations.name})) = ${needle}`)
+                .where(and(sql`LOWER(TRIM(${organizations.name})) = ${needle}`, ...(agencyStaff ? companyScope(req.user) : [])))
                 .limit(1);
             if (matchedOrg) targetOrgId = matchedOrg.id;
         }
@@ -167,11 +197,16 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
         if (req.body.affiliateCode) {
             affiliateAgency = await relationshipService.resolveAffiliate(req.body.affiliateCode);
         }
-        const claimFields = await orderService.resolveInitialClaim({
+        const routedClaim = await orderService.resolveInitialClaim({
             user: req.user || null,
             targetOrgId,
             affiliateAgency,
         });
+        // Needs the company's internal approval → hidden from agencies until approved.
+        const needsApproval = !!corp?.needsApproval;
+        const claimFields = needsApproval ? { claimStatus: 'awaiting_approval' } : routedClaim;
+        // Agency whose rate card prices this booking (owner, or would-be owner).
+        const pricingAgencyId = routedClaim.claimedByAgencyId || null;
 
         // Dates (shared across all vehicles in the booking)
         const start = new Date(pickupDate);
@@ -214,18 +249,32 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
         const createdOrders = [];
         let representativeCar = null;
         const carsById = new Map(); // carId -> car, for the Telegram per-row labels
-
         for (const v of vehicles) {
-            let car = null;
-            if (v.carId) {
-                car = await carService.findById(v.carId);
+            if (v.carId && !carsById.has(v.carId)) {
+                const car = await carService.findById(v.carId);
                 if (!car) return res.status(404).json({ error: 'Mobil tidak ditemukan' });
-                if (!representativeCar) representativeCar = car;
                 carsById.set(v.carId, car);
             }
+        }
+        // Pricing engine: rate card (+ corporate rate) of the owning agency.
+        // Falls back to the unit's own daily price; Rp0 = "harga menyusul".
+        const priced = await pricingService.priceRows(pricingAgencyId, targetOrgId, start, end, vehicles.map((v) => {
+            const car = v.carId ? carsById.get(v.carId) : null;
+            return {
+                category: car?.type || v.carCategoryRequested, package: v.package,
+                destination: (v.destination ?? destination) || null,
+                carModel: car ? `${car.brand || ''} ${car.name || ''}`.trim() : null, carPrice: car?.price,
+                overtimeHours: v.overtimeHours, overnightNights: v.overnightNights,
+            };
+        })).catch((e) => { console.warn('[pricing] booking pricing failed:', e.message); return vehicles.map(() => null); });
 
-            const dailyRate = car ? Number(car.price) : 0;
-            const totalPrice = car ? dailyRate * totalDays : 0;
+        for (const [vi, v] of vehicles.entries()) {
+            const car = v.carId ? carsById.get(v.carId) : null;
+            if (car && !representativeCar) representativeCar = car;
+
+            const price = priced[vi];
+            const dailyRate = price ? price.unitPrice : (car ? Number(car.price) : 0);
+            const totalPrice = price ? price.total : (car ? dailyRate * totalDays : 0);
 
             // Per-car notes line: category prefix + trip notes (shared text).
             // Each row gets the same trip notes so the admin can read context
@@ -261,6 +310,10 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
                 // Who submitted it (when logged in) — lets a client's Rekap show
                 // only their OWN submissions. Null for anonymous landing orders.
                 createdBy: req.user?.id || null,
+                costCenter: String(req.body.costCenter || '').trim() || null,
+                clientApprovalStatus: needsApproval ? 'waiting' : null,
+                priceSource: price ? price.source : (car ? 'car' : null),
+                priceZone: price ? price.zone : null,
                 ...claimFields,
             });
             createdOrders.push(order);
@@ -284,7 +337,11 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
         // notifyOrderCreated accepts either a single order (legacy) or an
         // array. We pass the array; older notification code can fall back
         // to orders[0] if it hasn't been updated yet (Phase 6 hardens this).
-        notifyOrderCreated({
+        // Waiting for the company's approval: no agency alert yet — the
+        // approvers are emailed and the alert goes out on approval.
+        if (needsApproval) {
+            corporateService.notifyApprovers(targetOrgId, { orderNumber: sharedOrderNumber, requesterName: req.user?.name || fullName, vehicleCount: createdOrders.length });
+        } else notifyOrderCreated({
             order: createdOrders[0],
             orders: createdOrders,
             car: representativeCar,
@@ -302,7 +359,10 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
 
         res.status(201).json({
             success: true,
-            message: vehicles.length === 1
+            awaitingApproval: needsApproval,
+            message: needsApproval
+                ? `Pesanan ${sharedOrderNumber} dikirim dan menunggu persetujuan atasan / penyetuju di perusahaan Anda.`
+                : vehicles.length === 1
                 ? 'Pesanan berhasil dikirim! Admin akan menghubungi Anda via WhatsApp untuk konfirmasi.'
                 : `Pesanan ${vehicles.length} kendaraan berhasil dikirim! Admin akan menghubungi Anda via WhatsApp untuk konfirmasi.`,
             order: {
@@ -326,7 +386,7 @@ router.post('/public', optionalAuth, validate(publicOrderSchema), async (req, re
 
 // List orders — accessible to ALL authenticated roles. Data scoping inside
 // the handler (Task 16) filters down to "own orders only" for plain clients.
-router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.get('/', requireAuth, requirePerm('orders', 'view'), async (req, res, next) => {
     try {
         const { search, status, sortBy, sortOrder, page, limit } = req.query;
         const result = await orderService.findAll({
@@ -339,7 +399,7 @@ router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (
     } catch (error) { next(error); }
 });
 
-router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/stats', requireAuth, requirePerm('orders', 'view'), async (req, res, next) => {
     try {
         const stats = await orderService.getStats(req.user);
         res.json(stats);
@@ -348,7 +408,7 @@ router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
 
 // Stage 2 — claimable bookings for the caller (unclaimed, in scope).
 // Registered BEFORE `/:id` so the literal path isn't captured as an id.
-router.get('/claimable', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/claimable', requireAuth, requirePerm('orders', 'claim'), async (req, res, next) => {
     try {
         const rows = await orderService.findClaimable(req.user);
         res.json({ data: rows, total: rows.length });
@@ -357,7 +417,7 @@ router.get('/claimable', requireAuth, requireAdmin, async (req, res, next) => {
 
 // Company-name suggestions for the booking form (per-user history; all for
 // superadmin). Registered BEFORE `/:id`. The field itself is free-text.
-router.get('/company-suggestions', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/company-suggestions', requireAuth, requireAnyPerm('orders.create', 'orders.edit'), async (req, res, next) => {
     try {
         const list = await orderService.companySuggestions(req.user);
         res.json({ data: list });
@@ -365,7 +425,7 @@ router.get('/company-suggestions', requireAuth, requireAdmin, async (req, res, n
 });
 
 // ─── Export orders data as flattened JSON ─────────────────────────────
-router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/data/export', requireAuth, requirePerm('orders', 'export'), auditRead('export', 'orders'), async (req, res, next) => {
     try {
         const all = await orderService.findAllRaw(req.user);
         const exportData = all.map((o, idx) => ({
@@ -374,6 +434,8 @@ router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => 
             nama: o.customer?.name || '',
             companyName: o.customer?.companyName || '',
             customerType: o.customer?.customerType || 'private',
+            pusatBiaya: o.costCenter || '',
+            persetujuanKlien: o.clientApprovalStatus || '',
             paket: o.package || '',
             tglPemakaian: o.pickupDate ? new Date(o.pickupDate).toISOString() : '',
             tglSelesai: o.returnDate ? new Date(o.returnDate).toISOString() : '',
@@ -391,6 +453,8 @@ router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => 
             // Invoice tracking (per booking).
             invoiceNumber: o.invoiceNumber || '',
             invoiceLetterNumber: o.invoiceLetterNumber || '',
+            noFakturPajak: o.fakturNsfp || '',
+            kontrak: o.contractNumber || '',
             invoiceSentDate: o.invoiceSentDate ? new Date(o.invoiceSentDate).toISOString() : '',
             invoiceDueDate: o.invoiceDueDate ? new Date(o.invoiceDueDate).toISOString() : '',
             invoicePaidDate: o.invoicePaidDate ? new Date(o.invoicePaidDate).toISOString() : '',
@@ -407,7 +471,7 @@ router.get('/data/export', requireAuth, requireAdmin, async (req, res, next) => 
 });
 
 // ─── Import orders data from JSON ─────────────────────────────────────
-router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 'order'), async (req, res, next) => {
+router.post('/data/import', requireAuth, requirePerm('orders', 'create'), activityLogger('create', 'order'), async (req, res, next) => {
     try {
         const items = req.body;
         if (!Array.isArray(items) || items.length === 0) {
@@ -417,6 +481,9 @@ router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 
         const orgId    = req.user.organizationId || null;
         const userId   = req.user.id;
         const isDemo   = req.user.isDemo || false;
+        // Imported rows are owned by the importing agency right away (Rule 3);
+        // a superadmin import goes to the default agency (it has no org itself).
+        const importOwner = await orderService.resolveInitialClaim({ user: req.user, targetOrgId: null });
 
         // ── Step 1: Pre-load all lookup tables in parallel (3 queries total) ──
         const [allCustomers, allCars, allDrivers] = await Promise.all([
@@ -548,6 +615,7 @@ router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 
                     status:         item.status   || 'pending',
                     notes:          item.notes    || null,
                     organizationId: orgId, createdBy: userId, isDemo,
+                    ...importOwner,
                 });
 
                 custCounts.set(customer.id, (custCounts.get(customer.id) || 0) + 1);
@@ -586,9 +654,11 @@ router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 
     } catch (error) { next(error); }
 });
 
-// Single-order detail — accessible to all roles; ownership check inside the
-// handler (Task 16) returns 404 if a plain client tries to read someone else's order.
-router.get('/:id', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+// Single-order detail. requireOrderAccess = same visibility as Rekap Order
+// (404 outside it). Security check 2026-11-05: this read had no ownership
+// check, so any account could read every order by id (customer contact,
+// price, driver SIM).
+router.get('/:id', requireAuth, requirePerm('orders', 'view'), requireOrderAccess, async (req, res, next) => {
     try {
         const order = await orderService.findById(parseInt(req.params.id));
         if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
@@ -641,7 +711,7 @@ const createOrderSchema = z.object({
     })).min(1).max(10).optional(),
 });
 
-router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activityLogger('create', 'order'), async (req, res, next) => {
+router.post('/', requireAuth, requirePerm('orders', 'create'), validate(createOrderSchema), activityLogger('create', 'order'), async (req, res, next) => {
     let idemSig = null; // booking identity; released on error
     try {
         const body = req.body;
@@ -684,12 +754,13 @@ router.post('/', requireAuth, requireAdmin, validate(createOrderSchema), activit
         let targetOrgId = req.user.organizationId || null;
         if (body.companyName && body.companyName.trim()) {
             const needle = body.companyName.toLowerCase().trim();
+            // Only the caller's own clients (superadmin: any) — see public route.
             const [matchedOrg] = await db.select({
                 id: organizations.id,
                 adminUserId: organizations.adminUserId,
             })
                 .from(organizations)
-                .where(sql`LOWER(TRIM(${organizations.name})) = ${needle}`)
+                .where(and(sql`LOWER(TRIM(${organizations.name})) = ${needle}`, ...(req.user.role === 'superadmin' ? [] : companyScope(req.user))))
                 .limit(1);
             if (matchedOrg) {
                 targetOrgId = matchedOrg.id;
@@ -869,7 +940,7 @@ const assignDriversSchema = z.object({
     })).min(1).max(20),
 });
 
-router.put('/assign-drivers', requireAuth, requireAdmin, validate(assignDriversSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/assign-drivers', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(assignDriversSchema), requireBodyOrderAccess(b => (b.assignments || []).map(a => a.orderId)), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const updated = await orderService.assignDriversBulk(req.body.assignments);
         res.json({ updated: updated.length, orders: updated });
@@ -886,7 +957,7 @@ const assignCarsSchema = z.object({
     })).min(1).max(20),
 });
 
-router.put('/assign-cars', requireAuth, requireAdmin, validate(assignCarsSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/assign-cars', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(assignCarsSchema), requireBodyOrderAccess(b => (b.assignments || []).map(a => a.orderId)), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const updated = await orderService.assignCarsBulk(req.body.assignments);
         res.json({ updated: updated.length, orders: updated });
@@ -905,7 +976,7 @@ const bookingItemsSchema = z.object({
     })).min(1).max(20),
 });
 
-router.put('/booking-items', requireAuth, requireAdmin, validate(bookingItemsSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking-items', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(bookingItemsSchema), requireBodyOrderAccess(b => (b.items || []).map(i => i.orderId)), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const updated = await orderService.updateBookingItemsBulk(req.body.items);
         res.json({ updated: updated.length, orders: updated });
@@ -940,11 +1011,8 @@ const bookingUpdateSchema = z.object({
     force: z.boolean().optional(),
 });
 
-router.put('/booking-update', requireAuth, requireAdmin, validate(bookingUpdateSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking-update', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(bookingUpdateSchema), activityLogger('update', 'order'), async (req, res, next) => {
     try {
-        if (req.user?.accountType === 'client' && req.user?.role !== 'superadmin') {
-            return res.status(403).json({ error: 'Akun client tidak dapat mengubah order.' });
-        }
         const result = await bookingEditService.update(req.body, req.user);
         res.json(result);
     } catch (error) {
@@ -960,10 +1028,63 @@ router.put('/booking-update', requireAuth, requireAdmin, validate(bookingUpdateS
     }
 });
 
+// ─── Inline single-cell edit (Rekap Order hover ✏️) ───────────────────
+// Literal path, registered BEFORE `/:id`. Field whitelist + validation live
+// in bookingEditService.updateField (auto-filled columns are rejected).
+const fieldEditSchema = z.object({
+    orderIds: z.array(z.number().int()).min(1).max(50),
+    field: z.string().min(1).max(40),
+    value: z.union([z.string(), z.number(), z.null()]).optional(),
+    expectedUpdatedAt: z.string().nullable().optional(),
+    force: z.boolean().optional(),
+});
+
+router.put('/field', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(fieldEditSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        res.json(await bookingEditService.updateField(req.user, req.body));
+    } catch (error) {
+        if (error.status) {
+            return res.status(error.status).json({
+                error: error.message,
+                ...(error.code ? { code: error.code } : {}),
+                ...(error.conflicts ? { conflicts: error.conflicts } : {}),
+            });
+        }
+        next(error);
+    }
+});
+
+// Row edit (several columns of one booking row at once, one transaction).
+// Literal path, registered before /:id.
+const fieldsEditSchema = z.object({
+    changes: z.array(z.object({
+        orderIds: z.array(z.number().int()).min(1).max(50),
+        field: z.string().min(1).max(40),
+        value: z.union([z.string(), z.number(), z.null()]).optional(),
+    })).min(1).max(25),
+    expectedUpdatedAt: z.string().nullable().optional(),
+    force: z.boolean().optional(),
+});
+
+router.put('/fields', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, validate(fieldsEditSchema), activityLogger('update', 'order'), async (req, res, next) => {
+    try {
+        res.json(await bookingEditService.updateFields(req.user, req.body));
+    } catch (error) {
+        if (error.status) {
+            return res.status(error.status).json({
+                error: error.message,
+                ...(error.code ? { code: error.code } : {}),
+                ...(error.conflicts ? { conflicts: error.conflicts } : {}),
+            });
+        }
+        next(error);
+    }
+});
+
 // ─── Tier 2 multi-vehicle: cancel an entire booking by its order code ──
 // Cancels every still-cancellable row sharing the code. Single-car cancel
 // keeps using PUT /:id/status. 3-segment path → no clash with PUT /:id.
-router.put('/booking/:orderNumber/cancel', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking/:orderNumber/cancel', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, requireBookingAccess, activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const cancelled = await orderService.cancelByOrderNumber(req.params.orderNumber);
         if (!cancelled.length) {
@@ -980,7 +1101,7 @@ const claimBulkSchema = z.object({
     orderNumbers: z.array(z.string().min(1)).min(1).max(2000),
 });
 
-router.put('/booking/claim-bulk', requireAuth, requireAdmin, validate(claimBulkSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking/claim-bulk', requireAuth, requirePerm('orders', 'claim'), validate(claimBulkSchema), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const summary = await orderService.claimManyByOrderNumber(req.body.orderNumbers, req.user);
         if (!summary.bookings) return res.status(404).json({ error: 'Tidak ada booking yang bisa diklaim.' });
@@ -997,7 +1118,7 @@ router.put('/booking/claim-bulk', requireAuth, requireAdmin, validate(claimBulkS
 });
 
 // ─── Stage 2: claim / release an entire booking (admin+ only) ─────────
-router.put('/booking/:orderNumber/claim', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking/:orderNumber/claim', requireAuth, requirePerm('orders', 'claim'), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const claimed = await orderService.claimByOrderNumber(req.params.orderNumber, req.user);
         if (!claimed.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
@@ -1011,7 +1132,7 @@ router.put('/booking/:orderNumber/claim', requireAuth, requireAdmin, activityLog
     } catch (error) { next(error); }
 });
 
-router.put('/booking/:orderNumber/release', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/booking/:orderNumber/release', requireAuth, requirePerm('orders', 'claim'), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const released = await orderService.releaseByOrderNumber(req.params.orderNumber);
         if (!released.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
@@ -1020,7 +1141,7 @@ router.put('/booking/:orderNumber/release', requireAuth, requireAdmin, activityL
 });
 
 // ─── Tier 2 multi-vehicle: delete an entire booking (all rows by code) ──
-router.delete('/booking/:orderNumber', requireAuth, requireAdmin, activityLogger('delete', 'order'), async (req, res, next) => {
+router.delete('/booking/:orderNumber', requireAuth, requirePerm('orders', 'delete'), denyClientOrderWrites, requireBookingAccess, activityLogger('delete', 'order'), async (req, res, next) => {
     try {
         const removed = await orderService.removeByOrderNumber(req.params.orderNumber);
         if (!removed.length) return res.status(404).json({ error: 'Booking tidak ditemukan.' });
@@ -1028,7 +1149,7 @@ router.delete('/booking/:orderNumber', requireAuth, requireAdmin, activityLogger
     } catch (error) { next(error); }
 });
 
-router.put('/:id', requireAuth, requireAdmin, validate(updateOrderSchema), activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/:id', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, requireOrderAccess, validate(updateOrderSchema), activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const id = parseInt(req.params.id);
         const existing = await orderService.findById(id);
@@ -1068,7 +1189,7 @@ router.put('/:id', requireAuth, requireAdmin, validate(updateOrderSchema), activ
 });
 
 // Delete order
-router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'order'), async (req, res, next) => {
+router.delete('/:id', requireAuth, requirePerm('orders', 'delete'), denyClientOrderWrites, requireOrderAccess, activityLogger('delete', 'order'), async (req, res, next) => {
     try {
         const id = parseInt(req.params.id);
         const removed = await orderService.remove(id);
@@ -1077,7 +1198,7 @@ router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'order
     } catch (error) { next(error); }
 });
 
-router.put('/:id/status', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/:id/status', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, requireOrderAccess, activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const { status } = req.body;
         const order = await orderService.updateStatus(parseInt(req.params.id), status, req.user.id);
@@ -1086,7 +1207,7 @@ router.put('/:id/status', requireAuth, requireAdmin, activityLogger('update', 'o
     } catch (error) { next(error); }
 });
 
-router.put('/:id/assign-driver', requireAuth, requireAdmin, activityLogger('update', 'order'), async (req, res, next) => {
+router.put('/:id/assign-driver', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, requireOrderAccess, activityLogger('update', 'order'), async (req, res, next) => {
     try {
         const { driverId } = req.body;
         const order = await orderService.assignDriver(parseInt(req.params.id), driverId);
@@ -1095,7 +1216,7 @@ router.put('/:id/assign-driver', requireAuth, requireAdmin, activityLogger('upda
     } catch (error) { next(error); }
 });
 
-router.post('/:id/send-confirmation', requireAuth, requireAdmin, async (req, res, next) => {
+router.post('/:id/send-confirmation', requireAuth, requirePerm('orders', 'edit'), denyClientOrderWrites, requireOrderAccess, async (req, res, next) => {
     try {
         const orderId = parseInt(req.params.id);
         const url = await whatsappService.buildConfirmationLink(orderId);
@@ -1103,6 +1224,25 @@ router.post('/:id/send-confirmation', requireAuth, requireAdmin, async (req, res
         await orderService.markWhatsAppSent(orderId);
         res.json({ url });
     } catch (error) { next(error); }
+});
+
+// ─── Driver trip log for an order row (staff view) ─────────────────────────
+router.get('/:id/trip', requireAuth, requirePerm('orders', 'view'), requireOrderAccess, async (req, res, next) => {
+    try { res.json(await driverAppService.tripForOrder(req.params.id)); } catch (e) { next(e); }
+});
+router.get('/:id/trip/photo/:phase/:idx', requireAuth, requirePerm('orders', 'view'), requireOrderAccess, auditRead('view', 'trip_photo'), async (req, res, next) => {
+    try {
+        const ref = await driverAppService.tripPhotoRef(req.params.id, req.params.phase, req.params.idx);
+        if (!ref) return res.status(404).json({ error: 'Foto tidak ditemukan.' });
+        sendPrivate(res, ref, 'trips');
+    } catch (e) { next(e); }
+});
+router.get('/:id/expense/:expenseId/receipt', requireAuth, requirePerm('orders', 'view'), requireOrderAccess, auditRead('view', 'expense_receipt'), async (req, res, next) => {
+    try {
+        const ref = await driverAppService.expenseReceiptRef(req.params.expenseId, req.params.id);
+        if (!ref) return res.status(404).json({ error: 'Nota tidak ditemukan.' });
+        sendPrivate(res, ref, 'expenses');
+    } catch (e) { next(e); }
 });
 
 export default router;

@@ -33,7 +33,7 @@ export const whatsappService = {
             message += `🧑‍✈️ *Data Driver:*\n`;
             message += `• Nama: ${driver.name}\n`;
             message += `• No. HP: ${driver.phone}\n`;
-            message += `• No. SIM: ${driver.licenseNumber || '-'}\n\n`;
+            message += '\n'; // SIM number is personal data — not shared with the customer
         }
 
         message += `📅 *Detail Sewa:*\n`;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import InlineEdit from "../components/InlineEdit";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
 import { api, apiCache, swr, carImgSrc } from "../lib/api";
@@ -7,7 +8,12 @@ import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs } from "../lib/dataFormats";
 import { useToast } from '../components/Toast';
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
 
+import AsyncButton from "../components/AsyncButton";
+import CarTypesModal from "../components/fleet/CarTypesModal";
+import UnitEventsModal from "../components/fleet/UnitEventsModal";
 const statusColors = {
   available: "bg-green-100 text-green-700",
   rented: "bg-blue-100 text-blue-700",
@@ -27,6 +33,11 @@ const emptyForm = {
 export default function AdminFleet() {
   const { t } = useLanguage();
   const toast = useToast();
+  // RBAC v2 — hide what the server would refuse.
+  const { user: authUser } = useAuth();
+  const canCreate = can(authUser, "fleet", "create");
+  const canEdit = can(authUser, "fleet", "edit");
+  const canDelete = can(authUser, "fleet", "delete");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [sortBy, setSortBy] = useState("createdAt");
@@ -37,6 +48,7 @@ export default function AdminFleet() {
   const [stats, setStats] = useState(() => apiCache.get("cars:stats") || null);
   const [loading, setLoading] = useState(() => !apiCache.has(cacheKey));
   const [showModal, setShowModal] = useState(false);
+  const [eventsCar, setEventsCar] = useState(null);   // Perawatan & darurat per unit
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -48,6 +60,15 @@ export default function AdminFleet() {
   const [showExport, setShowExport] = useState(false);
   // Bulk selection of units for one-shot status changes.
   const [selectedCars, setSelectedCars] = useState(() => new Set());
+  // Vehicle types = the agency's own list (Kelola tipe), not a fixed set.
+  const [typesData, setTypesData] = useState(() => apiCache.get("cars:types") || null);
+  const [showTypes, setShowTypes] = useState(false);
+  useEffect(() => {
+    swr("cars:types", () => api.cars.types(), (d) => setTypesData(d)).catch(() => {});
+  }, []);
+  const carTypes = typesData?.types?.length ? typesData.types : ["MPV", "SUV", "Sedan", "City Car", "Sport"];
+  // Keep a car's current value selectable even if it was removed from the list.
+  const typeOptions = (current) => (current && !carTypes.includes(current) ? [...carTypes, current] : carTypes);
 
   // Client-side search — re-fetch only on filter/sort change
   useEffect(() => { loadCars(); }, [statusFilter, sortBy, sortOrder]);
@@ -81,7 +102,7 @@ export default function AdminFleet() {
   }
 
   function openAdd() {
-    setForm(emptyForm);
+    setForm({ ...emptyForm, type: carTypes[0] || "" });
     setEditingId(null);
     setImageFiles([null, null, null]);
     setImagePreviews(['', '', '']);
@@ -166,6 +187,17 @@ export default function AdminFleet() {
       setSaving(false);
     }
   }
+
+  // Inline (hover ✏️) save — one field at a time.
+  async function saveCar(car, patch) {
+    try {
+      await api.cars.update(car.id, patch);
+      toast.success(t("inlineSaved"));
+      apiCache.invalidate("cars:");
+      loadCars();
+    } catch (e) { toast.error(e.message); throw e; }
+  }
+  const sel = (vals, fmt = (v) => v) => vals.map((v) => ({ value: v, label: fmt(v) }));
 
   async function handleDelete(id) {
     if (!confirm("Hapus mobil ini? Tindakan ini tidak dapat dibatalkan.")) return;
@@ -291,13 +323,23 @@ export default function AdminFleet() {
             Export
           </button>
           <button
+            hidden={!canCreate}
             onClick={() => setShowImport(true)}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors cursor-pointer"
           >
             <span className="material-symbols-outlined text-[18px]">upload</span>
             Import
           </button>
-          <button onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors shadow-sm cursor-pointer">
+          <button
+            hidden={!canEdit}
+            onClick={() => setShowTypes(true)}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors cursor-pointer"
+            title={t("ft_sub")}
+          >
+            <span className="material-symbols-outlined text-[18px]">category</span>
+            {t("ft_manage")}
+          </button>
+          <button hidden={!canCreate} onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors shadow-sm cursor-pointer">
             <span className="material-symbols-outlined text-[20px]">add</span>
             {t("addCar")}
           </button>
@@ -377,14 +419,14 @@ export default function AdminFleet() {
           <span className="text-sm font-semibold text-slate-700">{selectedCars.size} unit dipilih</span>
           <span className="text-slate-300">·</span>
           <span className="text-xs text-slate-500">Ubah status:</span>
-          <button onClick={() => handleBulkStatus("available")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("available")}</button>
-          <button onClick={() => handleBulkStatus("maintenance")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer">{t("maintenance") || "Perbaikan"}</button>
-          <button onClick={() => handleBulkStatus("rented")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 cursor-pointer">{t("rented")}</button>
+          <AsyncButton onClick={() => handleBulkStatus("available")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer">{t("available")}</AsyncButton>
+          <AsyncButton onClick={() => handleBulkStatus("maintenance")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer">{t("maintenance") || "Perbaikan"}</AsyncButton>
+          <AsyncButton onClick={() => handleBulkStatus("rented")} className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 cursor-pointer">{t("rented")}</AsyncButton>
           <span className="text-slate-300">·</span>
-          <button onClick={handleBulkDelete} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">
+          <AsyncButton hidden={!canDelete} onClick={handleBulkDelete} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer">
             <span className="material-symbols-outlined text-[14px]">delete</span>
             Hapus
-          </button>
+          </AsyncButton>
           <button onClick={() => setSelectedCars(new Set())} className="ml-auto text-xs text-slate-500 hover:text-slate-700 cursor-pointer">Bersihkan</button>
         </div>
       )}
@@ -440,22 +482,27 @@ export default function AdminFleet() {
                       <input type="checkbox" checked={selectedCars.has(car.id)} onChange={() => toggleCar(car.id)} className="cursor-pointer" />
                     </td>
                     <td className="px-3 py-3 text-right align-middle text-slate-500 tabular-nums">{(page - 1) * pageSize + idx + 1}</td>
-                    <td className="px-3 py-3 text-left align-middle font-medium text-slate-900">{car.name}</td>
-                    <td className="px-3 py-3 text-left align-middle text-slate-600">{car.brand}</td>
-                    <td className="px-3 py-3 text-left align-middle text-slate-600">{car.type}</td>
-                    <td className="px-3 py-3 text-left align-middle"><span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 capitalize">{car.category}</span></td>
-                    <td className="px-3 py-3 text-left align-middle text-slate-600">{car.year}</td>
+                    <td className="px-3 py-3 text-left align-middle font-medium text-slate-900"><InlineEdit disabled={!canEdit} value={car.name} onSave={(v) => saveCar(car, { name: v || car.name })} /></td>
+                    <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={car.brand} onSave={(v) => saveCar(car, { brand: v || car.brand })} /></td>
+                    <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={car.type} type="select" options={sel(typeOptions(car.type))} onSave={(v) => saveCar(car, { type: v })} /></td>
+                    <td className="px-3 py-3 text-left align-middle"><InlineEdit disabled={!canEdit} value={car.category} type="select" options={sel(["economy", "standard", "premium", "luxury"])} onSave={(v) => saveCar(car, { category: v })}
+                      display={<span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 capitalize">{car.category}</span>} /></td>
+                    <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={car.year} type="number" onSave={(v) => saveCar(car, { year: v ? Math.round(v) : null })} /></td>
                     <td className="px-3 py-3 text-left align-middle text-slate-600">
-                      {car.licensePlate}
-                      {car.isOwned && <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase">{t("ownedBadge")}</span>}
+                      <InlineEdit disabled={!canEdit} value={car.licensePlate || ""} onSave={(v) => saveCar(car, { licensePlate: v })} display={<>
+                        {car.licensePlate || "-"}
+                        {car.isOwned && <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase">{t("ownedBadge")}</span>}
+                      </>} />
                     </td>
-                    <td className="px-3 py-3 text-right align-middle font-semibold text-slate-700 tabular-nums">{formatPrice(car.price)}/hari</td>
-                    <td className="px-3 py-3 text-left align-middle text-slate-600">{car.capacity} {t("seats")}</td>
-                    <td className="px-3 py-3 text-left align-middle"><span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[car.status]}`}>{t(car.status)}</span></td>
+                    <td className="px-3 py-3 text-right align-middle font-semibold text-slate-700 tabular-nums"><InlineEdit disabled={!canEdit} value={Number(car.price)} type="number" align="right" onSave={(v) => saveCar(car, { price: String(v ?? 0) })} display={`${formatPrice(car.price)}/hari`} /></td>
+                    <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={car.capacity} type="number" onSave={(v) => saveCar(car, { capacity: Math.max(1, Math.round(v || 1)) })} display={`${car.capacity} ${t("seats")}`} /></td>
+                    <td className="px-3 py-3 text-left align-middle"><InlineEdit disabled={!canEdit} value={car.status} type="select" options={sel(["available", "rented", "maintenance"], (v) => t(v))} onSave={(v) => saveCar(car, { status: v })}
+                      display={<span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[car.status]}`}>{t(car.status)}</span>} /></td>
                     <td className="px-3 py-3 text-center align-middle">
                       <div className="flex items-center justify-center gap-1">
-                        <button onClick={() => openEdit(car)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer"><span className="material-symbols-outlined text-[18px]">edit</span></button>
-                        <button onClick={() => handleDelete(car.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+                        <button onClick={() => setEventsCar(car)} title={t("ue_btn")} className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer"><span className="material-symbols-outlined text-[18px]">build</span></button>
+                        <button hidden={!canEdit} onClick={() => openEdit(car)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer"><span className="material-symbols-outlined text-[18px]">edit</span></button>
+                        <AsyncButton hidden={!canDelete} onClick={() => handleDelete(car.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer"><span className="material-symbols-outlined text-[18px]">delete</span></AsyncButton>
                       </div>
                     </td>
                   </tr>
@@ -489,10 +536,11 @@ export default function AdminFleet() {
                   <span className="text-xs text-slate-400">{car.capacity} {t("seats")} • {car.transmission}</span>
                 </div>
                 <div className="flex gap-2 mt-4">
-                  <button onClick={() => openEdit(car)} className="flex-1 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">{t("edit")}</button>
-                  <button onClick={() => handleDelete(car.id)} className="py-2 px-3 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 cursor-pointer">
+                  <button onClick={() => setEventsCar(car)} title={t("ue_btn")} className="py-2 px-3 rounded-lg border border-amber-200 text-amber-600 hover:bg-amber-50 cursor-pointer"><span className="material-symbols-outlined text-[18px]">build</span></button>
+                  <button hidden={!canEdit} onClick={() => openEdit(car)} className="flex-1 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">{t("edit")}</button>
+                  <AsyncButton hidden={!canDelete} onClick={() => handleDelete(car.id)} className="py-2 px-3 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 cursor-pointer">
                     <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
+                  </AsyncButton>
                 </div>
               </div>
             </div>
@@ -501,6 +549,7 @@ export default function AdminFleet() {
       )}
 
       {/* Add/Edit Modal */}
+      {eventsCar && <UnitEventsModal car={eventsCar} canEdit={canEdit} onClose={() => { setEventsCar(null); apiCache.invalidate("cars:"); }} />}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowModal(false)}>
           <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -513,9 +562,12 @@ export default function AdminFleet() {
                 <FormField label={`${t("carName")} *`} value={form.name} onChange={v => setForm({...form, name: v})} required />
                 <FormField label={`${t("brand")} *`} value={form.brand} onChange={v => setForm({...form, brand: v})} required />
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">{t("type")} *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-slate-700">{t("type")} *</label>
+                    {canEdit && <button type="button" onClick={() => setShowTypes(true)} className="text-xs font-semibold text-primary hover:underline cursor-pointer">{t("ft_manage")}</button>}
+                  </div>
                   <select value={form.type} onChange={e => setForm({...form, type: e.target.value})} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm cursor-pointer">
-                    {["MPV", "SUV", "Sedan", "City Car", "Sport"].map(t => <option key={t} value={t}>{t}</option>)}
+                    {typeOptions(form.type).map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 <div>
@@ -601,6 +653,11 @@ export default function AdminFleet() {
           onClose={() => setShowExport(false)}
         />
       )}
+      {showTypes && typesData && (
+        <CarTypesModal data={typesData} onClose={() => setShowTypes(false)}
+          onSaved={(d) => { setTypesData(d); apiCache.set("cars:types", d); setShowTypes(false); loadCars(); }} />
+      )}
+
       {showImport && (
         <SharedImportModal
           title="Import Data Armada"

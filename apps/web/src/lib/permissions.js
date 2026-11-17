@@ -43,7 +43,20 @@ export const FEATURES = Object.freeze({
     USERS: 'users',
     ACCESS_REQUESTS: 'access_requests',
     SETTINGS: 'settings',
+    PRICING: 'pricing',
+    CORPORATE: 'corporate',
+    DRIVERAPP: 'driverapp',
+    CONTRACTS: 'contracts',
+    FLEETCARE: 'fleetcare',
+    OPSRECAP: 'opsrecap',
+    CONTRACTHUB: 'contracthub', // Kontrak & Perusahaan (contracts ∪ opsrecap)
+    REPORTS: 'reports',         // Laporan & Audit (former Portal Perusahaan + audit trail)
 });
+
+/** Driver-app-only account (no admin panel features) → lives at /driver. */
+export function isDriverOnly(user) {
+    return Array.isArray(user?.perms) && user.perms.includes('driverapp.use') && !user.perms.includes('orders.view') && user.role !== 'superadmin';
+}
 
 const ALL = Object.values(FEATURES);
 
@@ -90,11 +103,51 @@ function featuresFor(accountType, role) {
     return [];
 }
 
+// ─── RBAC v2 ─────────────────────────────────────────────────────────────────
+// Once AuthContext has loaded GET /api/users/me/access, `user.perms` holds the
+// exact 'feature.action' list the SERVER enforces, and every check below uses
+// it. The role-based lists above remain only as a fallback for the brief
+// moment before that response arrives.
+const FEATURE_VIEW_PERM = {
+    access_requests: 'orders.claim', // "Klaim Order" menu
+    users: 'users.view',
+    driverapp: 'driverapp.use',
+    fleetcare: 'fleet.view',
+};
+
+/** can(user, 'orders', 'edit') — action-level check (default 'view'). */
+export function can(user, feature, action = 'view') {
+    if (!user || !feature) return false;
+    if (user.role === 'superadmin') return true;
+    if (Array.isArray(user.perms)) {
+        // Portal Perusahaan: clients with spend/approval rights; agencies use it
+        // for the monthly consolidated invoice (documents.edit).
+        if (feature === 'contracthub' && action === 'view') {
+            return can(user, 'contracts', 'view') || can(user, 'opsrecap', 'view');
+        }
+        if (feature === 'reports' && action === 'view') {
+            return can(user, 'corporate', 'view') || can(user, 'contracts', 'view');
+        }
+        if (feature === 'corporate' && action === 'view') {
+            const isClient = user.accountType === 'client';
+            return isClient
+                ? user.perms.includes('corporate.view') || user.perms.includes('corporate.manage') || user.perms.includes('orders.approve')
+                : user.perms.includes('documents.edit');
+        }
+        const perm = action === 'view' && FEATURE_VIEW_PERM[feature] ? FEATURE_VIEW_PERM[feature] : `${feature}.${action}`;
+        return user.perms.includes(perm);
+    }
+    return action === 'view' ? legacyCanAccess(user, feature) : isAdminLike(user);
+}
+
 /**
- * Can this user see this feature? Checks the role-default list first, then
- * the per-user grant override (`grant_<feature>` in permissions JSONB).
+ * Can this user see this feature (its menu / page)?
  */
 export function canAccess(user, feature) {
+    return can(user, feature, 'view');
+}
+
+function legacyCanAccess(user, feature) {
     if (!user || !feature) return false;
     const { accountType, role } = resolveAxes(user);
     if (!accountType) return false;

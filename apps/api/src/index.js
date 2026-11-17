@@ -2,6 +2,10 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { LEGACY_SENSITIVE } from './services/private-files.js';
+import { pingDb, startKeepWarm } from './services/db-health.service.js';
+import { isTransientDbError } from './db/index.js';
+import { assertEncryptionConfigured } from './services/crypto.service.js';
 import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
 import path from 'path';
@@ -27,8 +31,6 @@ import financeRoutes from './routes/finance.routes.js';
 import journalRoutes from './routes/journal.routes.js';
 import accountsRoutes from './routes/accounts.routes.js';
 import usersRoutes from './routes/users.routes.js';
-import { runRekapSync, REKAP_PATH } from './services/sync.service.js';
-import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -42,6 +44,10 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 // else out. "1" means one proxy hop (nginx). No-op in dev where there
 // is no proxy in front.
 app.set('trust proxy', 1);
+
+// Request timing for the latency work (Server-Timing header, slow log, /api/health/perf).
+import { perfMiddleware, perfReport } from './services/perf.service.js';
+app.use(perfMiddleware);
 
 // ─── Security ────────────────────────────────────────────────────────
 app.use(helmet({
@@ -57,11 +63,34 @@ const apiLimiter = rateLimit({
     message: { error: 'Too many requests, please try again later.' },
 });
 
-const authLimiter = rateLimit({
+// Auth rate limits — split by purpose.
+//  • credentialLimiter: endpoints that take a password / send email
+//    (sign-in, sign-up, password reset, verification, register-extended).
+//    Only FAILED attempts count, so a user who logs in fine is never blocked;
+//    this still stops password guessing.
+//  • sessionLimiter: everything else under /api/auth (get-session runs on
+//    every page load — and on every dev hot-reload). It used to share the
+//    20/min credential budget AND was counted twice (two middlewares), which
+//    logged users out mid-session with "Too many auth attempts".
+const CREDENTIAL_PATHS = /^\/api\/auth\/(sign-in|sign-up|forget-password|request-password-reset|reset-password|send-verification-email|verify-email|change-password|register-extended|two-factor\/verify)/;
+const credentialLimiter = rateLimit({
     windowMs: 1 * 60 * 1000,
-    max: 20,
+    max: 10,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false,
     message: { error: 'Too many auth attempts, please try again later.' },
 });
+const sessionLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' },
+});
+// ONE limiter per request (no double counting): pick by path.
+const authLimiter = (req, res, next) =>
+    (CREDENTIAL_PATHS.test(req.originalUrl) ? credentialLimiter : sessionLimiter)(req, res, next);
 
 // ─── CORS ────────────────────────────────────────────────────────────
 // Localhost entries are dev-only — in production the only allowed origin
@@ -98,19 +127,57 @@ if (process.env.DEBUG === 'true') {
 
 // ─── Body Parsing ────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
+
+// ─── Data-leak hardening ─────────────────────────────────────────────
+// API responses carry personal data: never cache them (browser, proxy, CDN)
+// and never let search engines index them.
+app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    next();
+});
+// AES-256 key: required in production (throws → PM2 shows the reason).
+assertEncryptionConfigured();
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Static Files (uploads) ─────────────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Public uploads = car images only. Legacy driver SIM/KTP/photo
+// (driver-*) and finance documents (finance/*) are personal/confidential and
+// are only reachable through the authenticated document endpoints.
+app.use('/uploads', (req, res, next) => { let p = req.path; try { p = decodeURIComponent(p); } catch { return res.status(400).end(); } return LEGACY_SENSITIVE.test(p) ? res.status(404).end() : next(); },
+    express.static(path.join(__dirname, '../uploads'), { dotfiles: 'deny', index: false, setHeaders: (r) => r.setHeader('X-Content-Type-Options', 'nosniff') }));
 
 // ─── Custom auth extensions — mounted BEFORE the Better Auth catch-all
 //     so /api/auth/register-extended reaches our handler instead of being
 //     intercepted by Better Auth's wildcard. ────────────────────────────
 import authExtraRoutes from './routes/auth-extra.routes.js';
-app.use('/api/auth', authLimiter, authExtraRoutes);
+// Rate limit applied ONCE here for every /api/auth/* request (custom routes
+// and Better Auth alike) — previously it ran on both mounts and counted twice.
+app.use('/api/auth', authLimiter);
+app.use('/api/auth', authExtraRoutes);
+
+// ─── Session lock / idle timeout on the session probe (owner 2026-11-13) ─
+// A page load after 15 idle minutes (or after a take-over elsewhere) must not
+// look logged in: answer 401 with the reason instead of the stale session.
+import { sessionService } from './services/session.service.js';
+import { fromNodeHeaders } from 'better-auth/node';
+app.get('/api/auth/get-session', async (req, res, next) => {
+    try {
+        const s = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+        if (!s) {
+            const end = await sessionService.endedReason(req.headers.cookie).catch(() => null);
+            return end ? res.status(401).json(sessionService.endedBody(end)) : next();
+        }
+        const g = await sessionService.guard(req, s);
+        return g.ok ? next() : res.status(401).json(sessionService.endedBody({ reason: 'expired' }));
+    } catch { return next(); }
+});
 
 // ─── Better Auth ─────────────────────────────────────────────────────
-app.all('/api/auth/*splat', authLimiter, toNodeHandler(auth));
+app.all('/api/auth/*splat', toNodeHandler(auth));
+import sessionRoutes from './routes/session.routes.js';
+app.use('/api/session', apiLimiter, sessionRoutes);
 
 // ─── API Routes ──────────────────────────────────────────────────────
 app.use('/api/cars', apiLimiter, carsRoutes);
@@ -131,17 +198,58 @@ app.use('/api/accounts', apiLimiter, accountsRoutes);
 app.use('/api/users', apiLimiter, usersRoutes);
 import accessRequestsRoutes from './routes/access-requests.routes.js';
 app.use('/api/access-requests', apiLimiter, accessRequestsRoutes);
+import legalRoutes from './routes/legal.routes.js';
+app.use('/api/orgs/legal', apiLimiter, legalRoutes); // before /api/orgs (its /:id routes)
 import orgsRoutes from './routes/orgs.routes.js';
 app.use('/api/orgs', apiLimiter, orgsRoutes);
 import invoicesRoutes from './routes/invoices.routes.js';
+import fakturRoutes from './routes/faktur.routes.js';
 app.use('/api/invoices', apiLimiter, invoicesRoutes);
+app.use('/api/faktur', apiLimiter, fakturRoutes);
+import booksRoutes from './routes/books.routes.js';
+import pricingRoutes from './routes/pricing.routes.js';
+import corporateRoutes from './routes/corporate.routes.js';
+import paymentsRoutes from './routes/payments.routes.js';
+import driverAppRoutes from './routes/driver-app.routes.js';
+import marketplaceRoutes from './routes/marketplace.routes.js';
+import contractsRoutes from './routes/contracts.routes.js';
+import fleetCareRoutes from './routes/fleet-care.routes.js';
+import opsRoutes from './routes/ops.routes.js';
+import { startJobs } from './services/jobs.service.js';
+import { startClaimReminders } from './services/marketplace.service.js';
+app.use('/api/books', apiLimiter, booksRoutes);
+app.use('/api/pricing', apiLimiter, pricingRoutes);
+app.use('/api/corporate', apiLimiter, corporateRoutes);
+app.use('/api/payments', paymentsRoutes);   // webhook must not be rate-limited per IP
+app.use('/api/driver-app', apiLimiter, driverAppRoutes);
+app.use('/api/marketplace', apiLimiter, marketplaceRoutes);
+app.use('/api/contracts', apiLimiter, contractsRoutes);
+app.use('/api/fleet-care', apiLimiter, fleetCareRoutes);
+app.use('/api/ops', apiLimiter, opsRoutes);
 // Telegram + future channels (test ping, status). Admin-only inside the router.
 import notificationsRoutes from './routes/notifications.routes.js';
 app.use('/api/notifications', apiLimiter, notificationsRoutes);
+// In-app notifications per user (bell + dashboard "Perlu tindakan").
+import inboxRoutes from './routes/inbox.routes.js';
+app.use('/api/inbox', apiLimiter, inboxRoutes);
 
 // ─── Health Check ────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Liveness + DB check. 200 when the DB answers, 503 otherwise — monitors
+// (UptimeRobot, Better Stack) alert on the status code. No secrets exposed.
+let lastHealth = { at: 0, value: null };   // public endpoint → cache 10 s
+// Latency report per route (superadmin): p50 / p95 / max ms and queries per request.
+import { requireAuth as perfAuth, requireSuperAdmin as perfSuper } from './middleware/auth.js';
+app.get('/api/health/perf', perfAuth, perfSuper, (req, res) => res.json(perfReport({ reset: req.query.reset === '1' })));
+
+app.get('/api/health', async (req, res) => {
+    if (Date.now() - lastHealth.at > 10_000) lastHealth = { at: Date.now(), value: await pingDb() };
+    const dbCheck = lastHealth.value;
+    res.status(dbCheck.ok ? 200 : 503).json({
+        status: dbCheck.ok ? 'ok' : 'degraded',
+        db: dbCheck,
+        uptimeSec: Math.round(process.uptime()),
+        timestamp: new Date().toISOString(),
+    });
 });
 
 // ─── Error Handler ───────────────────────────────────────────────────
@@ -152,36 +260,31 @@ const server = app.listen(PORT, () => {
     console.log(`🚗 DSR Solution API running on http://localhost:${PORT}`);
     console.log(`📋 Auth:       http://localhost:${PORT}/api/auth`);
     console.log(`🔧 Debug mode: ${process.env.DEBUG === 'true' ? 'ON' : 'OFF'}`);
+    startKeepWarm();
+    startClaimReminders();
+    startJobs();
 
-    // ─── Periodic Rekap → DB sync ────────────────────────────────────
-    // Watches the local "Rekap 2026.xlsx" (refreshed by the python script
-    // in DSR Invoice Automation/) and re-runs the upsert whenever the
-    // file's mtime changes. Default interval is every 10 minutes — override
-    // with REKAP_SYNC_INTERVAL_MS in .env. Set REKAP_SYNC_DISABLED=true to skip.
-    if (process.env.REKAP_SYNC_DISABLED !== 'true') {
-        const intervalMs = Number(process.env.REKAP_SYNC_INTERVAL_MS) || 10 * 60 * 1000;
-        let lastMtime = null;
-        const tick = async () => {
-            try {
-                if (!fs.existsSync(REKAP_PATH)) return;
-                const stat = fs.statSync(REKAP_PATH);
-                if (lastMtime && stat.mtime.getTime() === lastMtime) return; // no change
-                lastMtime = stat.mtime.getTime();
-                console.log(`[scheduler] Rekap mtime changed → running sync (${REKAP_PATH})`);
-                const summary = await runRekapSync({ trigger: 'scheduled' });
-                console.log(`[scheduler] sync ${summary.status} — orders +${summary.ordersInserted}/~${summary.ordersUpdated}, customers +${summary.customersInserted}/~${summary.customersUpdated}, ${summary.durationMs}ms`);
-            } catch (err) {
-                console.error('[scheduler] sync error:', err.message);
-            }
-        };
-        // Kick off shortly after boot so the server doesn't start blocked on a sync
-        setTimeout(tick, 5_000);
-        setInterval(tick, intervalMs);
-        console.log("Rekap sync watcher started, every " + Math.round(intervalMs / 60000) + " min, file=" + REKAP_PATH);
-    } else {
-        console.log("Rekap auto-sync disabled via REKAP_SYNC_DISABLED");
-    }
 });
+
+// ─── Crash safety net ────────────────────────────────────────────────
+// A dropped Neon connection (ECONNRESET etc.) inside a background job or an
+// idle pooled socket must not take the whole API down — log it and carry on
+// (the next request/tick reconnects). Anything else is a real bug: log and
+// exit so PM2 restarts a clean process.
+function onFatal(kind) {
+    return (err) => {
+        const code = err?.code || err?.cause?.code || '';
+        const msg = String(err?.message || err || '').split('\n')[0];
+        if (isTransientDbError(err)) {
+            console.warn(`[db] ${kind} transient connection error ignored (${code}): ${msg}`);
+            return;
+        }
+        console.error(`[fatal] ${kind}:`, err);
+        process.exit(1);
+    };
+}
+process.on('unhandledRejection', onFatal('unhandledRejection'));
+process.on('uncaughtException', onFatal('uncaughtException'));
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────
 // PM2 reloads send SIGTERM. Without this, in-flight requests get killed

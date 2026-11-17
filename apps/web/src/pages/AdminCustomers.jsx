@@ -7,7 +7,11 @@ import SharedImportModal from "../components/SharedImportModal";
 import SharedExportModal from "../components/SharedExportModal";
 import { exportAs } from "../lib/dataFormats";
 import { useToast } from "../components/Toast";
+import InlineEdit from "../components/InlineEdit";
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
 
+import AsyncButton from "../components/AsyncButton";
 const statusColors = {
   active: "bg-green-100 text-green-700",
   vip: "bg-purple-100 text-purple-700",
@@ -28,6 +32,11 @@ const emptyForm = {
 
 export default function AdminCustomers() {
   const toastApi = useToast();
+  // RBAC v2 — hide what the server would refuse.
+  const { user: authUser } = useAuth();
+  const canCreate = can(authUser, "customers", "create");
+  const canEdit = can(authUser, "customers", "edit");
+  const canDelete = can(authUser, "customers", "delete");
   const { t } = useLanguage();
   const [showImport, setShowImport] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -100,6 +109,16 @@ export default function AdminCustomers() {
     setShowModal(true);
   }
 
+  // Inline (hover ✏️) save — one field at a time.
+  async function saveCust(cust, patch) {
+    try {
+      await api.customers.update(cust.id, patch);
+      showToast(t("inlineSaved"));
+      apiCache.invalidate("customers:");
+      loadCustomers();
+    } catch (e) { showToast(e.message, "error"); throw e; }
+  }
+
   async function handleSave(e) {
     e.preventDefault();
     setSaving(true);
@@ -115,6 +134,16 @@ export default function AdminCustomers() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleAnonymize(cust) {
+    if (!confirm(t("custAnonymizeConfirm", { name: cust.name }))) return;
+    try {
+      await api.customers.anonymize(cust.id);
+      apiCache.invalidate("customers:"); apiCache.invalidate("orders:");
+      loadCustomers();
+      showToast(t("custAnonymized"));
+    } catch (error) { showToast(error.message, "error"); }
   }
 
   async function handleDelete(id) {
@@ -265,7 +294,7 @@ export default function AdminCustomers() {
           <p className="text-slate-500 text-sm mt-1">Kelola data pelanggan</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {duplicateCount > 0 && (
+          {duplicateCount > 0 && authUser?.role === "superadmin" && (
             <button
               onClick={handleDeduplicate}
               disabled={deduplicating}
@@ -283,13 +312,14 @@ export default function AdminCustomers() {
             Export
           </button>
           <button
+            hidden={!canCreate}
             onClick={() => setShowImport(true)}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors cursor-pointer"
           >
             <span className="material-symbols-outlined text-[18px]">upload</span>
             Import
           </button>
-          <button onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-colors shadow-sm cursor-pointer">
+          <button hidden={!canCreate} onClick={openAdd} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-colors shadow-sm cursor-pointer">
             <span className="material-symbols-outlined text-[20px]">person_add</span>
             {t("addCustomer")}
           </button>
@@ -355,6 +385,7 @@ export default function AdminCustomers() {
           <span className="material-symbols-outlined text-red-500">checklist</span>
           <span className="text-sm font-medium text-red-700">{selected.size} pelanggan dipilih</span>
           <button
+            hidden={!canDelete}
             onClick={handleBulkDelete}
             disabled={bulkDeleting}
             className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 cursor-pointer disabled:opacity-60"
@@ -430,27 +461,35 @@ export default function AdminCustomers() {
                     {(page - 1) * pageSize + idx + 1}
                   </td>
                   <td className="px-3 py-3 text-left align-middle">
-                    <p className="font-medium text-slate-900">{cust.name}</p>
-                    <p className="text-xs text-slate-400">{cust.email || "-"}</p>
+                    <p className="font-medium text-slate-900"><InlineEdit disabled={!canEdit} value={cust.name} onSave={(v) => saveCust(cust, { name: v || cust.name })} /></p>
+                    <p className="text-xs text-slate-400"><InlineEdit disabled={!canEdit} value={cust.email || ""} display={cust.email || "-"} type="email" onSave={(v) => saveCust(cust, { email: v || null })} /></p>
                   </td>
-                  <td className="px-3 py-3 text-left align-middle text-slate-600">{cust.phone || "-"}</td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={cust.phone || ""} display={cust.phone || "-"} onSave={(v) => saveCust(cust, { phone: v || null })} /></td>
                   <td className="px-3 py-3 text-left align-middle">
-                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${typeColors[cust.customerType] || "bg-slate-100 text-slate-600"}`}>
-                      {cust.customerType === "company" ? "🏢 Perusahaan" : "👤 Pribadi"}
-                    </span>
+                    <InlineEdit disabled={!canEdit} value={cust.customerType || "private"} type="select"
+                      options={[{ value: "private", label: "👤 Pribadi" }, { value: "company", label: "🏢 Perusahaan" }]}
+                      onSave={(v) => saveCust(cust, { customerType: v })}
+                      display={<span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${typeColors[cust.customerType] || "bg-slate-100 text-slate-600"}`}>
+                        {cust.customerType === "company" ? "🏢 Perusahaan" : "👤 Pribadi"}
+                      </span>} />
                   </td>
-                  <td className="px-3 py-3 text-left align-middle text-slate-600">{cust.job || "-"}</td>
+                  <td className="px-3 py-3 text-left align-middle text-slate-600"><InlineEdit disabled={!canEdit} value={cust.job || ""} display={cust.job || "-"} onSave={(v) => saveCust(cust, { job: v || null })} /></td>
                   <td className="px-3 py-3 text-left align-middle">
-                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[cust.status]}`}>{t(cust.status)}</span>
+                    <InlineEdit disabled={!canEdit} value={cust.status} type="select" options={["active", "vip", "inactive", "pending"].map((v) => ({ value: v, label: t(v) }))}
+                      onSave={(v) => saveCust(cust, { status: v })}
+                      display={<span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusColors[cust.status]}`}>{t(cust.status)}</span>} />
                   </td>
                   <td className="px-3 py-3 text-center align-middle">
                     <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => openEdit(cust)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer">
+                      <button hidden={!canEdit} onClick={() => openEdit(cust)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 cursor-pointer">
                         <span className="material-symbols-outlined text-[18px]">edit</span>
                       </button>
-                      <button onClick={() => handleDelete(cust.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer">
+                      <AsyncButton hidden={!canDelete} onClick={() => handleAnonymize(cust)} title={t("custAnonymize")} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer">
+                        <span className="material-symbols-outlined text-[18px]">person_off</span>
+                      </AsyncButton>
+                      <AsyncButton hidden={!canDelete} onClick={() => handleDelete(cust.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500 cursor-pointer">
                         <span className="material-symbols-outlined text-[18px]">delete</span>
-                      </button>
+                      </AsyncButton>
                     </div>
                   </td>
                 </tr>

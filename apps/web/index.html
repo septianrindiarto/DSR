@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f172a" />
     <title>DSR Solution - Sewa Mobil Terpercaya</title>
     <meta name="description" content="DSR Solution - Temukan mobil terbaik untuk perjalanan Anda dengan harga terjangkau dan pelayanan terbaik. Sewa mobil terpercaya di Indonesia." />
     <link href="https://fonts.googleapis.com" rel="preconnect" />
@@ -14,5 +16,6 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>if ("serviceWorker" in navigator && location.pathname.startsWith("/driver")) navigator.serviceWorker.register("/sw.js").catch(() => {});</script>
   </body>
 </html>

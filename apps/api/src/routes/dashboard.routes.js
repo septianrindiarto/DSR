@@ -2,17 +2,18 @@ import { Router } from 'express';
 import { dashboardService } from '../services/dashboard.service.js';
 import { requireAuth, requireAdmin, requireRole } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
 
 const router = Router();
 
-router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/stats', requireAuth, requirePerm('dashboard', 'view'), async (req, res, next) => {
     try {
         const stats = await dashboardService.getStats(req.user);
         res.json(stats);
     } catch (error) { next(error); }
 });
 
-router.get('/recent-orders', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/recent-orders', requireAuth, requirePerm('dashboard', 'view'), async (req, res, next) => {
     try {
         const limit = req.query.limit ? parseInt(req.query.limit) : 5;
         const orders = await dashboardService.getRecentOrders(limit, req.user);

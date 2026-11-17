@@ -34,6 +34,14 @@ if (current.role === 'superadmin') {
   process.exit(0);
 }
 
+// Exactly one superadmin for the whole platform (also enforced by a unique index).
+const existing = await db.execute(sql`SELECT email FROM "user" WHERE role = 'superadmin'`);
+const others = existing.rows ?? existing;
+if (others.length) {
+  console.error(`✗ A superadmin already exists (${others[0].email}). Only one superadmin is allowed.`);
+  process.exit(1);
+}
+
 const updated = await db.execute(sql`
   UPDATE "user" SET role = 'superadmin', updated_at = NOW()
   WHERE email = ${email}

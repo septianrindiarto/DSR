@@ -4,6 +4,9 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { activityLogger } from '../middleware/logger.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
+import { requireRowScope, requireBodyRowScope } from '../middleware/row-scope.js';
+import { maintenance as maintenance, cars } from '../db/schema.js';
 
 const router = Router();
 
@@ -17,7 +20,7 @@ const maintenanceSchema = z.object({
     status: z.enum(['scheduled', 'in_progress', 'completed']).optional(),
 });
 
-router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/', requireAuth, requirePerm('fleet', 'view'), async (req, res, next) => {
     try {
         const { status, page, limit } = req.query;
         const result = await maintenanceService.findAll({
@@ -30,7 +33,11 @@ router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-router.post('/', requireAuth, requireAdmin, validate(maintenanceSchema), activityLogger('create', 'maintenance'), async (req, res, next) => {
+// Body whitelist for PUT (unknown keys stripped; tenant columns not writable).
+const maintenanceUpdateSchema = maintenanceSchema.partial().extend({ completedDate: z.string().optional().nullable() });
+const carInScope = requireBodyRowScope(cars, (b) => (b.carId ? [b.carId] : []));
+
+router.post('/', requireAuth, requirePerm('fleet', 'edit'), validate(maintenanceSchema), carInScope, activityLogger('create', 'maintenance'), async (req, res, next) => {
     try {
         const data = {
             ...req.body,
@@ -44,7 +51,7 @@ router.post('/', requireAuth, requireAdmin, validate(maintenanceSchema), activit
     } catch (error) { next(error); }
 });
 
-router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'maintenance'), async (req, res, next) => {
+router.put('/:id', requireAuth, requirePerm('fleet', 'edit'), requireRowScope(maintenance), validate(maintenanceUpdateSchema), carInScope, activityLogger('update', 'maintenance'), async (req, res, next) => {
     try {
         const data = { ...req.body };
         if (data.scheduledDate) data.scheduledDate = new Date(data.scheduledDate);

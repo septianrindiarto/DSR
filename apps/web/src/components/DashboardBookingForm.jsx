@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import PriceEstimate from "./PriceEstimate";
 
 // DashboardBookingForm v5 (Tier 2 multi-vehicle)
 // Customers can request 1-N vehicles in a single submission. The backend
@@ -53,6 +54,13 @@ export default function DashboardBookingForm({ onCreated }) {
     user?.role === "client" || user?.role === "client_admin";
   const isAgency = !isClient;
   const [companyOptions, setCompanyOptions] = useState([]); // autosuggest names
+  // Corporate portal: cost centres + approval rule of the client's company.
+  const [rules, setRules] = useState(null);
+  const [costCenter, setCostCenter] = useState("");
+  useEffect(() => {
+    if (!isClient || !user?.organizationId) return;
+    api.corporate.bookingRules().then(setRules).catch(() => {});
+  }, [isClient, user?.organizationId]);
 
   useEffect(() => {
     api.me.get().then(setMe).catch(() => {});
@@ -150,11 +158,12 @@ export default function DashboardBookingForm({ onCreated }) {
     if (!form.whatsapp.trim()) return false;
     if (!form.pickupDate || !form.returnDate) return false;
     if (form.vehicles.length === 0) return false;
+    if (rules?.costCenterRequired && !costCenter) return false;
     return form.vehicles.every(
       v => v.carCategory && v.package && v.package.trim() &&
         (v.carCategory !== "Lainnya" || v.carCategoryNote.trim()),
     );
-  }, [form]);
+  }, [form, rules?.costCenterRequired, costCenter]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -212,6 +221,7 @@ export default function DashboardBookingForm({ onCreated }) {
         returnDate: form.returnDate,
         notes: form.notes || null,
         vehicles: validVehicles,
+        costCenter: costCenter || null,
       };
       const result = await api.orders.createPublic(payload);
       setInfo(result?.message || "Pesanan berhasil dikirim. Admin akan menghubungi Anda.");
@@ -364,6 +374,28 @@ export default function DashboardBookingForm({ onCreated }) {
             placeholder="Catatan tambahan untuk admin"
           />
         </FieldL>
+      </div>
+
+      {/* Corporate: cost centre + approval note, then the live price estimate */}
+      <div className="px-5 pb-3 space-y-3">
+        {rules?.costCenters?.length > 0 && (
+          <label className="block max-w-sm">
+            <span className="block text-xs font-semibold text-slate-600 mb-1">Pusat biaya / divisi{rules.costCenterRequired ? " *" : ""}</span>
+            <select value={costCenter} onChange={(e) => setCostCenter(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white">
+              <option value="">— pilih —</option>
+              {rules.costCenters.map((c) => <option key={c.name} value={c.name}>{c.code ? `${c.code} · ` : ""}{c.name}</option>)}
+            </select>
+          </label>
+        )}
+        {rules?.needsApproval && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2">
+            <span className="material-symbols-outlined text-[16px]">approval</span>
+            Pesanan Anda akan menunggu persetujuan penyetuju di perusahaan sebelum diteruskan ke agency.
+          </p>
+        )}
+        <PriceEstimate pickupDate={form.pickupDate} returnDate={form.returnDate}
+          vehicles={form.vehicles.map((v) => ({ category: v.carCategory, package: v.package, destination: v.destination, quantity: v.quantity }))} />
       </div>
 
       {(info || error) && (

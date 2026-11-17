@@ -24,7 +24,8 @@ import { validate } from '../middleware/validate.js';
 import { generateUniqueInviteCode, normalizeCompanyName } from '../services/invite-code.service.js';
 import { findAvailableDisplayId } from '../services/display-id.service.js';
 import { sendInviteCodeEmail } from '../services/email.service.js';
-import { relationshipService, resolveDefaultAgencyId, findAgencyIdByCode } from '../services/relationship.service.js';
+import { relationshipService, resolveDefaultAgencyId, findAgencyIdByCode, ensureParentLink } from '../services/relationship.service.js';
+import { accessService } from '../services/access.service.js';
 
 // New client orgs get parent_agency_id = the agency whose agencyCode was used
 // at signup, else the default/home agency (see resolveDefaultAgencyId). The
@@ -35,7 +36,7 @@ const router = Router();
 const registerSchema = z.object({
     name: z.string().min(1, 'Nama wajib diisi').max(255),
     email: z.string().email('Email tidak valid'),
-    password: z.string().min(6, 'Password minimal 6 karakter'),
+    password: z.string().min(8, 'Password minimal 8 karakter').max(128),
     phone: z.string().min(6, 'No. HP wajib diisi').max(50),
     customerType: z.enum(['private', 'company']).default('private'),
     companyName: z.string().max(255).optional().nullable(),
@@ -50,7 +51,7 @@ const registerSchema = z.object({
         }
         return true;
     },
-    { message: 'Untuk tipe Perusahaan, isi Nama Perusahaan ATAU Kode Undangan', path: ['companyName'] }
+    { message: 'Untuk tipe Perusahaan, isi Nama Perusahaan ATAU Kode Perusahaan', path: ['companyName'] }
 );
 
 router.post('/register-extended', validate(registerSchema), async (req, res, next) => {
@@ -136,6 +137,12 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                 inviteCode: code,
                 displayId,
                 parentAgencyId: null, // top-level agency
+                phone1: phone || null,
+                // RBAC v2: a new agency starts in legal "setup" mode — it can set
+                // up the account but can't take/claim orders or be linked by
+                // clients until NIB, Akta, NPWP, KTP and phone are complete
+                // (auto-activates, no superadmin approval).
+                legalStatus: 'setup',
             }).returning({ id: organizations.id });
             finalOrgId = orgRow.id;
             createdOrgId = orgRow.id; // for rollback on later failure
@@ -153,7 +160,8 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
             }
             finalOrgId = org.id;
             finalRole = 'user';
-            finalAccountType = 'client';
+            // Joining an AGENCY org by invite makes you agency staff (was: always client).
+            finalAccountType = org.parentAgencyId == null ? 'agency' : 'client';
         } else if (customerType === 'company' && companyName && companyName.trim()) {
             // Client creating a NEW org. Check for soft duplicate by BOTH
             // name_normalized (Phase 4A) AND lower(name) (catches legacy rows
@@ -199,12 +207,19 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
             createdOrgId = orgRow.id; // for rollback on later failure
             finalRole = 'admin';
             finalAccountType = 'client';
+            if (parentAgencyId) await ensureParentLink(orgRow.id, parentAgencyId, null);
             createdOrgInviteCode = code;
         } else {
             // Private client, no company. role=user, no org link.
             finalRole = 'user';
             finalAccountType = 'client';
         }
+
+        // RBAC v2 — every new account gets a template: org admins the admin
+        // template, members the org's default template (fallback: staff/user).
+        const finalTemplateKey = await accessService.templateForNewMember(
+            finalOrgId, finalAccountType, finalRole === 'admin',
+        );
 
         // 3. Persist accountType / role / organizationId on the user row.
         // Use .returning() to confirm the row actually updated. If it did
@@ -217,6 +232,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                 role: finalRole,
                 accountType: finalAccountType,
                 organizationId: finalOrgId,
+                templateKey: finalTemplateKey,
             })
             .where(eq(userTable.id, newUserId))
             .returning({ id: userTable.id, role: userTable.role, accountType: userTable.accountType, organizationId: userTable.organizationId });
@@ -228,6 +244,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                     role: finalRole,
                     accountType: finalAccountType,
                     organizationId: finalOrgId,
+                    templateKey: finalTemplateKey,
                 })
                 .where(eq(userTable.email, email))
                 .returning({ id: userTable.id, role: userTable.role, accountType: userTable.accountType, organizationId: userTable.organizationId });
@@ -243,7 +260,10 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
         // 3b. Stage 2 — if the client supplied an Agency Code at signup, link
         // their company org to that agency (active). Only meaningful for company
         // clients (private clients have no org; affiliate links route them).
-        if (finalAccountType === 'client' && finalOrgId && agencyCode && agencyCode.trim()) {
+        // Only a NEW company is linked by an agency code. A member joining an
+        // existing company inherits that company's agencies — they must not be
+        // able to add an agency to the whole company at sign-up.
+        if (finalAccountType === 'client' && finalOrgId && createdOrgId && agencyCode && agencyCode.trim()) {
             try {
                 await relationshipService.addAgencyByCode(finalOrgId, agencyCode, newUserId);
             } catch (linkErr) {
@@ -309,6 +329,7 @@ router.post('/register-extended', validate(registerSchema), async (req, res, nex
                 role: finalRole,
                 accountType: finalAccountType,
                 organizationId: finalOrgId,
+                templateKey: finalTemplateKey,
             },
             customerId,
             inviteCode: createdOrgInviteCode,

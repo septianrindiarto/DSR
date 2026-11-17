@@ -1,4 +1,4 @@
-import { eq, or, isNull, sql } from 'drizzle-orm';
+import { eq, or, and, isNull, sql } from 'drizzle-orm';
 
 /**
  * Build Drizzle WHERE conditions that enforce data isolation.
@@ -39,7 +39,7 @@ import { eq, or, isNull, sql } from 'drizzle-orm';
  * @param {{ organizationId, isDemo, createdBy, ownerUserId }} cols - Drizzle column refs
  * @returns {import('drizzle-orm').SQL[]}
  */
-export function buildScopeConditions(user, { organizationId, isDemo, createdBy, ownerUserId, claimedByAgencyId }) {
+export function buildScopeConditions(user, { organizationId, isDemo, createdBy, ownerUserId, claimedByAgencyId, customerId }) {
     if (!user) return [];
 
     if (user.role === 'superadmin') return [];
@@ -124,11 +124,24 @@ export function buildScopeConditions(user, { organizationId, isDemo, createdBy, 
         SELECT client_org_id FROM client_agency_links WHERE agency_org_id = ${orgId} AND status = 'active'
     )`;
 
+    // Customers: also those appearing in orders this agency owns (bookings
+    // store the customer without an organisation).
+    const viaOwnOrders = customerId
+        ? [sql`${customerId} IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL AND (organization_id = ${orgId} OR claimed_by_agency_id = ${orgId}))`]
+        : [];
+
     if (user.role === 'admin') {
+        // Legacy rows with NO organisation (imports, public bookings) belong to
+        // the HOME agency only (DEFAULT_AGENCY_ID, else the first agency).
+        // Before 2026-11-05 every agency admin saw them — a new self-registered
+        // agency could read and export other agencies' customers/drivers.
+        const homeEnv = Number(process.env.DEFAULT_AGENCY_ID) || null;
+        const isHome = sql`${orgId} = COALESCE(${homeEnv}::int, (SELECT min(id) FROM organizations WHERE parent_agency_id IS NULL AND is_active = true))`;
         const conds = [or(
             eq(organizationId, orgId),
             sql`${organizationId} IN ${clientOrgsSubquery}`,
-            isNull(organizationId),
+            and(isNull(organizationId), isHome),
+            ...viaOwnOrders,
         )];
         if (isDemo) conds.push(eq(isDemo, false));
         return conds;
@@ -138,6 +151,7 @@ export function buildScopeConditions(user, { organizationId, isDemo, createdBy, 
     const conds = [or(
         eq(organizationId, orgId),
         sql`${organizationId} IN ${clientOrgsSubquery}`,
+        ...viaOwnOrders,
     )];
     if (isDemo) conds.push(eq(isDemo, false));
     return conds;

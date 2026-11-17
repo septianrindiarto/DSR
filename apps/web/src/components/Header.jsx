@@ -8,7 +8,7 @@ import { useLanguage } from "../context/LanguageContext";
 
 export default function Header() {
   const { user, loading } = useAuth();
-  const { t, lang, toggleLanguage } = useLanguage();
+  const { t, lang, toggleLanguage, multiLanguage } = useLanguage();
 
   return (
     <header className="w-full bg-white border-b border-border-color sticky top-0 z-50">
@@ -25,6 +25,7 @@ export default function Header() {
             {/* Language toggle, visible on every public page. Compact pill
                 that flips between ID and EN. The actual flip happens via
                 LanguageContext, so all pages re-render in the new locale. */}
+            {multiLanguage && (
             <button
               type="button"
               onClick={toggleLanguage}
@@ -35,6 +36,7 @@ export default function Header() {
               <span className="material-symbols-outlined text-[16px] text-slate-400">translate</span>
               <span>{lang}</span>
             </button>
+            )}
 
             {loading ? (
               <div className="h-10 w-24 rounded-lg bg-slate-100 animate-pulse" />

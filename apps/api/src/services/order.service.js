@@ -1,7 +1,10 @@
 import { db } from '../db/index.js';
-import { orders, cars, customers, drivers, clientAgencyLinks } from '../db/schema.js';
+import { orders, cars, customers, drivers, clientAgencyLinks, organizations } from '../db/schema.js';
 import { eq, ilike, or, and, asc, desc, sql, gte, lte, like, isNull, inArray } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
+import { priceUnpricedRows } from './pricing.service.js';
+import { decryptDriver } from './driver.service.js';
+import { resolveDefaultAgencyId } from './relationship.service.js';
 
 /**
  * Generate a sequential order number based on customer type.
@@ -18,10 +21,11 @@ import { buildScopeConditions } from '../middleware/scope.js';
  *
  * Exported via orderService.generateOrderNumber so routes can use it.
  */
-export async function generateOrderNumber(customerId) {
-    let prefix = 'P';
+// prefix override: 'M' = monthly contract booking (M001…), see contracts.service.
+export async function generateOrderNumber(customerId, { prefix: forced = null } = {}) {
+    let prefix = forced || 'P';
     try {
-        if (customerId) {
+        if (customerId && !forced) {
             const rows = await db
                 .select({ customerType: customers.customerType })
                 .from(customers)
@@ -43,7 +47,7 @@ export async function generateOrderNumber(customerId) {
 
     let max = 0;
     for (const r of rows) {
-        const match = /^[CP](\d+)$/.exec(r.orderNumber || '');
+        const match = new RegExp(`^${prefix}(\\d+)$`).exec(r.orderNumber || '');
         if (match) {
             const n = parseInt(match[1], 10);
             if (n > max) max = n;
@@ -91,6 +95,56 @@ const sortFields = {
     bailout: orders.bailout,
 };
 
+// "Budi Santoso" → "Budi S."; "081234567890" → "0812•••••890".
+const shortName = (n) => {
+    const parts = String(n || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return null;
+    return parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : parts[0];
+};
+const maskPhone = (p) => {
+    const d = String(p || '').replace(/\s+/g, '');
+    return d.length >= 7 ? `${d.slice(0, 4)}•••••${d.slice(-3)}` : (d ? '•••' : null);
+};
+export function maskClaimable(o) {
+    const c = o.customer || {};
+    return {
+        ...o,
+        customerName: shortName(o.customerName),
+        notes: null,
+        customer: c ? {
+            id: c.id, customerType: c.customerType, companyName: c.companyName,
+            name: shortName(c.name), phone: maskPhone(c.phone || c.whatsapp), whatsapp: null,
+            email: null, address: null, job: null, notes: null,
+        } : null,
+        contactHidden: true,
+    };
+}
+
+// Rekap Order mapping columns (owner 2026-11-09): which faktur pajak, which
+// surat pengantar (orders.invoice_letter_number) and which contract a row
+// belongs to. Contract: orders.contract_id, else the monthly billing (M) or
+// ops form (L/R) that produced the code. Empty when a row has none.
+const contractIdExpr = sql`COALESCE(${orders.contractId},
+    (SELECT lb.contract_id FROM lease_billings lb WHERE lb.order_number = ${orders.orderNumber} LIMIT 1),
+    (SELECT oe.contract_id FROM ops_entries oe WHERE oe.code = ${orders.orderNumber} LIMIT 1))`;
+const mappingCols = {
+    contractRef: sql`${contractIdExpr}`.mapWith(Number),
+    contractNumber: sql`(SELECT lc.contract_number FROM lease_contracts lc WHERE lc.id = ${contractIdExpr})`,
+    fakturId: sql`(SELECT i.faktur_id FROM invoices i WHERE i.id = ${orders.invoiceId})`,
+    fakturNsfp: sql`(SELECT fp.nsfp FROM invoices i JOIN faktur_pajak fp ON fp.id = i.faktur_id WHERE i.id = ${orders.invoiceId})`,
+    fakturStatus: sql`(SELECT fp.status FROM invoices i JOIN faktur_pajak fp ON fp.id = i.faktur_id WHERE i.id = ${orders.invoiceId})`,
+    // M code: invoice date = the contract month's tanggal tagih (contract-billing.service).
+    contractInvoiceDate: sql`(SELECT lub.detail->>'invoiceDate' FROM lease_unit_billings lub WHERE lub.order_id = ${orders.id} LIMIT 1)`,
+    // M detail form status (open | submitted | approved | rejected) — only approved can be invoiced.
+    contractFormStatus: sql`(SELECT lub.status FROM lease_unit_billings lub WHERE lub.order_id = ${orders.id} LIMIT 1)`,
+};
+const withMapping = (r) => ({
+    contractId: r.contractRef || null, contractNumber: r.contractNumber || null,
+    fakturId: r.fakturId || null, fakturNsfp: r.fakturNsfp || null, fakturStatus: r.fakturStatus || null,
+    contractInvoiceDate: r.contractInvoiceDate || null,
+    contractFormStatus: r.contractFormStatus || null,
+});
+
 export const orderService = {
     async findAll({ search, status, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 20, scopeUser = null }) {
         const offset = (page - 1) * limit;
@@ -115,6 +169,7 @@ export const orderService = {
                 car: cars,
                 customer: customers,
                 driver: drivers,
+                ...mappingCols,
             })
             .from(orders)
             .leftJoin(cars, eq(orders.carId, cars.id))
@@ -180,9 +235,10 @@ export const orderService = {
         return {
             data: results.map(r => ({
                 ...r.order,
+                ...withMapping(r),
                 car: r.car,
                 customer: r.customer,
-                driver: r.driver,
+                driver: decryptDriver(r.driver),
             })),
             total: Number(countResult[0].count),
             page,
@@ -205,6 +261,7 @@ export const orderService = {
                 car: cars,
                 customer: customers,
                 driver: drivers,
+                ...mappingCols,
             })
             .from(orders)
             .leftJoin(cars, eq(orders.carId, cars.id))
@@ -216,9 +273,10 @@ export const orderService = {
 
         return results.map(r => ({
             ...r.order,
+            ...withMapping(r),
             car: r.car,
             customer: r.customer,
-            driver: r.driver,
+            driver: decryptDriver(r.driver),
         }));
     },
 
@@ -238,7 +296,7 @@ export const orderService = {
 
         if (result.length === 0) return null;
         const r = result[0];
-        return { ...r.order, car: r.car, customer: r.customer, driver: r.driver };
+        return { ...r.order, car: r.car, customer: r.customer, driver: decryptDriver(r.driver) };
     },
 
     async create(data) {
@@ -432,6 +490,7 @@ export const orderService = {
         if (isAgency) {
             patch.claimedByAgencyId = user.organizationId || null;
             patch.claimStatus = 'agency_claimed';
+            patch.claimedAt = new Date();
         } else {
             if (user.organizationId) patch.organizationId = user.organizationId;
             patch.claimStatus = 'client_claimed';
@@ -452,6 +511,8 @@ export const orderService = {
                     .values({ clientOrgId, agencyOrgId: user.organizationId, status: 'active', createdBy: user.id })
                     .onConflictDoNothing();
             }
+            // Pricing engine: rows still at Rp0 get this agency's rate (best-effort).
+            await priceUnpricedRows(updated, user.organizationId).catch((e) => console.warn('[pricing] claim pricing failed:', e.message));
         }
         return updated;
     },
@@ -471,6 +532,7 @@ export const orderService = {
         if (isAgency) {
             patch.claimedByAgencyId = user.organizationId || null;
             patch.claimStatus = 'agency_claimed';
+            patch.claimedAt = new Date();
         } else {
             if (user.organizationId) patch.organizationId = user.organizationId;
             patch.claimStatus = 'client_claimed';
@@ -495,6 +557,7 @@ export const orderService = {
                     })))
                     .onConflictDoNothing();
             }
+            await priceUnpricedRows(updated, user.organizationId).catch((e) => console.warn('[pricing] claim pricing failed:', e.message));
         }
 
         // Per-code summary for the toast (rows updated, grouped by code).
@@ -512,7 +575,7 @@ export const orderService = {
     async releaseByOrderNumber(orderNumber) {
         if (!orderNumber) return [];
         return db.update(orders)
-            .set({ claimedByUserId: null, claimedByAgencyId: null, claimStatus: 'unclaimed', updatedAt: new Date() })
+            .set({ claimedByUserId: null, claimedByAgencyId: null, claimStatus: 'unclaimed', claimedAt: null, claimReminderCount: 0, lastClaimReminderAt: null, updatedAt: new Date() })
             .where(eq(orders.orderNumber, orderNumber))
             .returning();
     },
@@ -536,20 +599,24 @@ export const orderService = {
                 claimedByAgencyId: affiliateAgency.organizationId,
                 claimedByUserId: affiliateAgency.id || null,
                 claimStatus: 'agency_claimed',
+                claimedAt: new Date(),
             };
         }
 
         // Rule 3 — the vendor (agency / superadmin) creating the order OWNS it
-        // immediately, so it is never open for claiming. This holds even when
-        // the account has no organization yet (e.g. a manually-created
-        // superadmin) — claimedByAgencyId is simply null in that case, but the
-        // order is still marked claimed so it stays out of Klaim Order.
+        // immediately, so it is never open for claiming.
+        // The superadmin has no organisation of its own, so it acts for the
+        // agency that serves the client (see ownerAgencyFor). Before this fix
+        // its orders were stored with NO owning agency and vanished from every
+        // agency's Rekap (owner test 2026-10-28: C081…C134 missing for DSR Rent Car).
         const actsAsAgency = !!user && (user.accountType === 'agency' || user.role === 'superadmin');
         if (actsAsAgency) {
+            const agencyId = user.organizationId || (await this.ownerAgencyFor(targetOrgId));
             return {
-                claimedByAgencyId: user.organizationId || null,
+                claimedByAgencyId: agencyId || null,
                 claimedByUserId: user.id,
                 claimStatus: 'agency_claimed',
+                claimedAt: new Date(),
             };
         }
 
@@ -568,12 +635,28 @@ export const orderService = {
                     claimedByAgencyId: links[0].agencyOrgId,
                     claimedByUserId: null,
                     claimStatus: 'agency_claimed',
+                claimedAt: new Date(),
                 };
             }
         }
 
         // Rule 2 (and scenario 1/2): leave open for claiming.
         return { claimStatus: 'unclaimed' };
+    },
+
+    // Agency that owns an order the superadmin enters for a client org:
+    // its single active linked agency → its parent agency → the default agency.
+    async ownerAgencyFor(clientOrgId = null) {
+        if (clientOrgId) {
+            const links = await db.select({ agencyOrgId: clientAgencyLinks.agencyOrgId }).from(clientAgencyLinks)
+                .where(and(eq(clientAgencyLinks.clientOrgId, clientOrgId), eq(clientAgencyLinks.status, 'active')));
+            if (links.length === 1) return links[0].agencyOrgId;
+            const [o] = await db.select({ id: organizations.id, parentAgencyId: organizations.parentAgencyId })
+                .from(organizations).where(eq(organizations.id, clientOrgId)).limit(1);
+            if (o && o.parentAgencyId == null) return o.id;       // the org is itself an agency
+            if (o?.parentAgencyId) return o.parentAgencyId;
+        }
+        return resolveDefaultAgencyId();
     },
 
     // Stage 2 — bookings the caller may claim. §10 visibility:
@@ -615,7 +698,15 @@ export const orderService = {
             .leftJoin(drivers, eq(orders.driverId, drivers.id))
             .where(where)
             .orderBy(desc(orders.createdAt));
-        return rows.map(r => ({ ...r.order, car: r.car, customer: r.customer, driver: r.driver }));
+        // Before claiming, agencies get NO contact details (security check
+        // 2026-11-05): otherwise an agency could read the phone/email from the
+        // open list and approach the customer outside the platform. Company,
+        // route, dates and price stay visible to decide on claiming.
+        const mask = scopeUser?.role !== 'superadmin';
+        return rows.map(r => {
+            const o = { ...r.order, car: r.car, customer: r.customer, driver: decryptDriver(r.driver) };
+            return mask ? maskClaimable(o) : o;
+        });
     },
 
     // Autosuggest source for the booking form's "Nama Perusahaan" field.

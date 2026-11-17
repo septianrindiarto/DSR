@@ -1,7 +1,12 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { db } from './db/index.js';
+import { user as userTable } from './db/schema.js';
+import { eq } from 'drizzle-orm';
+import { APIError } from 'better-auth/api';
 import { sendEmail } from './services/email.service.js';
+import { twoFactor } from 'better-auth/plugins';
+import { sessionService } from './services/session.service.js';
 
 export const auth = betterAuth({
     database: drizzleAdapter(db, {
@@ -12,7 +17,10 @@ export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_URL,
     emailAndPassword: {
         enabled: true,
-        minPasswordLength: 6,
+        // Security batch 2: 8+ characters (was 6). Existing passwords keep
+        // working; the rule applies when a password is set or changed.
+        minPasswordLength: 8,
+        maxPasswordLength: 128,
         // Block sign-in until email_verified = true. Better Auth returns
         // a structured error the frontend can translate.
         requireEmailVerification: true,
@@ -35,8 +43,14 @@ export const auth = betterAuth({
             // domain, recipient outside Resend's free-tier allowlist, etc.)
             // the developer can copy the link from the terminal and complete
             // verification manually.
-            console.log(`[auth] Verification link for ${user.email}:`);
-            console.log(`        ${link}`);
+            // Dev only: the link is a bearer credential — never log it in prod.
+            const isProd = process.env.NODE_ENV === 'production';
+            if (!isProd) {
+                console.log(`[auth] Verification link for ${user.email}:`);
+                console.log(`        ${link}`);
+            }
+            // Display name is user-controlled → HTML-escape it for the email body.
+            const safeName = String(user.name || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
             // Resilience: NEVER throw out of this callback. If Resend is not
             // yet configured (missing API key, network down, etc.) we still
             // want signup / login flows to complete.
@@ -48,7 +62,7 @@ export const auth = betterAuth({
 <html><body style="font-family:Inter,Arial,sans-serif;background:#fcf8f8;padding:32px;">
   <table style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;border:1px solid #eacdce;padding:32px;">
     <tr><td>
-      <h1 style="color:#1d0c0d;font-size:22px;margin:0 0 8px;">Halo ${user.name || ''},</h1>
+      <h1 style="color:#1d0c0d;font-size:22px;margin:0 0 8px;">Halo ${safeName},</h1>
       <p style="color:#4a4a4a;font-size:14px;line-height:1.6;margin:0 0 20px;">
         Terima kasih sudah mendaftar di <b>DSR Solution</b>. Untuk mengaktifkan akun Anda,
         klik tombol di bawah ini.
@@ -78,16 +92,42 @@ export const auth = betterAuth({
             });
             } catch (err) {
                 console.error('[auth] sendVerificationEmail failed:', err.message);
-                console.log('[auth] DEV FALLBACK — give the user this link manually:');
-                console.log('         ', link);
+                if (!isProd) {
+                    console.log('[auth] DEV FALLBACK — give the user this link manually:');
+                    console.log('         ', link);
+                }
                 // Swallow the error. The user can still verify by clicking the
                 // link we just printed; auth flows are not blocked.
             }
         },
     },
+    // Optional TOTP two-step verification (Google Authenticator etc.).
+    // Sign-in of a 2FA user answers { twoFactorRedirect: true } and the client
+    // completes it with /api/auth/two-factor/verify-totp (or backup code).
+    plugins: [
+        twoFactor({ issuer: 'DSR Solution' }),
+    ],
     session: {
         expiresIn: 60 * 60 * 24 * 7, // 7 days
         updateAge: 60 * 60 * 24, // 1 day
+    },
+    // Deactivated accounts cannot sign in (a new session is refused). Existing
+    // sessions are blocked per request in middleware/auth.js requireAuth.
+    databaseHooks: {
+        session: {
+            create: {
+                before: async (session, context) => {
+                    const [u] = await db.select({ isActive: userTable.isActive }).from(userTable).where(eq(userTable.id, session.userId)).limit(1);
+                    if (u && u.isActive === false) {
+                        throw new APIError('FORBIDDEN', { message: 'Akun Anda telah dinonaktifkan. Hubungi administrator.' });
+                    }
+                    // One live login per user (owner 2026-11-13): refuses with code
+                    // USER_ONLINE / USER_ONLINE_KICKABLE, or ends the other login on take-over.
+                    await sessionService.beforeCreate(session, context);
+                    return { data: session };
+                },
+            },
+        },
     },
     user: {
         additionalFields: {

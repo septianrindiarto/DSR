@@ -1,6 +1,6 @@
 import { db } from '../db/index.js';
 import { orders, cars, customers, drivers, maintenance } from '../db/schema.js';
-import { eq, and, gte, lte, asc, or, sql, ne, inArray } from 'drizzle-orm';
+import { eq, and, gte, lte, asc, or, sql, ne, inArray, isNull } from 'drizzle-orm';
 import { buildScopeConditions } from '../middleware/scope.js';
 
 export const scheduleService = {
@@ -30,6 +30,7 @@ export const scheduleService = {
             organizationId: orders.organizationId,
             isDemo: orders.isDemo,
             createdBy: orders.createdBy,
+            claimedByAgencyId: orders.claimedByAgencyId,
         });
         const maintScope = buildScopeConditions(scopeUser, {
             organizationId: maintenance.organizationId,
@@ -84,9 +85,10 @@ export const scheduleService = {
             .orderBy(asc(orders.pickupDate));
 
         // ── 5. Get maintenance overlapping with range ────────────────
+        // Planned start → end (owner 2026-11-13: end_date); without an end it is the start day.
         const maintConditions = [
             lte(maintenance.scheduledDate, end),
-            gte(maintenance.scheduledDate, start),
+            or(gte(maintenance.endDate, start), and(isNull(maintenance.endDate), gte(maintenance.scheduledDate, start))),
             or(
                 eq(maintenance.status, 'scheduled'),
                 eq(maintenance.status, 'in_progress')
@@ -157,7 +159,7 @@ export const scheduleService = {
                 and(
                     eq(maintenance.carId, carId),
                     lte(maintenance.scheduledDate, end),
-                    gte(maintenance.scheduledDate, start)
+                    or(gte(maintenance.endDate, start), and(isNull(maintenance.endDate), gte(maintenance.scheduledDate, start)))
                 )
             );
 

@@ -1,9 +1,13 @@
 import { Router } from 'express';
-import { companyService } from '../services/company.service.js';
+import { companyService, companyScope } from '../services/company.service.js';
+import { db } from '../db/index.js';
+import { organizations } from '../db/schema.js';
+import { and, eq } from 'drizzle-orm';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { activityLogger } from '../middleware/logger.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
 
 const router = Router();
 
@@ -34,7 +38,19 @@ const companySchema = z.object({
     notes: optionalText,
 });
 
-router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
+// By-id guard: out-of-scope companies answer 404 (no cross-tenant edits).
+async function requireCompanyScope(req, res, next) {
+    try {
+        const id = Number(req.params.id);
+        if (!id) return res.status(400).json({ error: 'ID tidak valid' });
+        const [row] = await db.select({ id: organizations.id }).from(organizations)
+            .where(and(eq(organizations.id, id), ...companyScope(req.user))).limit(1);
+        if (!row) return res.status(404).json({ error: 'Perusahaan tidak ditemukan' });
+        next();
+    } catch (e) { next(e); }
+}
+
+router.get('/', requireAuth, requireAnyPerm('customers.view', 'documents.view', 'orders.create', 'orders.edit', 'settings.edit'), async (req, res, next) => {
     try {
         const { search, sortBy, sortOrder, page, limit } = req.query;
         const result = await companyService.findAll({
@@ -49,16 +65,16 @@ router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
 
 // Lookup by exact name (case-insensitive) — used by the Documents page to
 // auto-fill the address when the invoice "Nama / Perusahaan" matches.
-router.get('/lookup', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/lookup', requireAuth, requireAnyPerm('customers.view', 'documents.view', 'orders.create', 'orders.edit', 'settings.edit'), async (req, res, next) => {
     try {
         const name = req.query.name;
         if (!name) return res.status(400).json({ error: 'Parameter "name" wajib diisi' });
-        const company = await companyService.findByName(String(name));
+        const company = await companyService.findByName(String(name), req.user);
         res.json(company || null);
     } catch (error) { next(error); }
 });
 
-router.get('/:id', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/:id', requireAuth, requireAnyPerm('customers.view', 'documents.view', 'orders.create', 'orders.edit', 'settings.edit'), requireCompanyScope, async (req, res, next) => {
     try {
         const company = await companyService.findById(parseInt(req.params.id));
         if (!company) return res.status(404).json({ error: 'Perusahaan tidak ditemukan' });
@@ -81,11 +97,12 @@ function friendlyDbError(error) {
         return { status: 400, error: 'Ada field wajib yang kosong.' };
     }
     // Strip the verbose "Failed query: ..." prefix that postgres-js logs
+    if (process.env.NODE_ENV === 'production') { console.error('[companies]', error); return { status: 500, error: 'Terjadi kesalahan database' }; }
     const clean = String(error?.message || 'Terjadi kesalahan').replace(/^Failed query:.*?params:[^\n]*\n?/is, '').trim();
     return { status: 500, error: clean || 'Terjadi kesalahan database' };
 }
 
-router.post('/', requireAuth, requireAdmin, validate(companySchema), activityLogger('create', 'company'), async (req, res, next) => {
+router.post('/', requireAuth, requireAnyPerm('customers.create', 'documents.edit'), validate(companySchema), activityLogger('create', 'company'), async (req, res, next) => {
     try {
         const company = await companyService.create({
             ...req.body,
@@ -100,7 +117,7 @@ router.post('/', requireAuth, requireAdmin, validate(companySchema), activityLog
     }
 });
 
-router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'company'), async (req, res, next) => {
+router.put('/:id', requireAuth, requireAnyPerm('customers.edit', 'documents.edit'), requireCompanyScope, validate(companySchema.partial()), activityLogger('update', 'company'), async (req, res, next) => {
     try {
         const company = await companyService.update(parseInt(req.params.id), req.body);
         if (!company) return res.status(404).json({ error: 'Perusahaan tidak ditemukan' });
@@ -111,7 +128,7 @@ router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'company'
     }
 });
 
-router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'company'), async (req, res, next) => {
+router.delete('/:id', requireAuth, requirePerm('customers', 'delete'), requireCompanyScope, activityLogger('delete', 'company'), async (req, res, next) => {
     try {
         const company = await companyService.delete(parseInt(req.params.id));
         if (!company) return res.status(404).json({ error: 'Perusahaan tidak ditemukan' });

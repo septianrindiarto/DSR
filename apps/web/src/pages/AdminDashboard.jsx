@@ -3,6 +3,11 @@ import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
 import { api, apiCache, swr } from "../lib/api";
 import DashboardBookingForm from "../components/DashboardBookingForm";
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
+import { useNavigate } from "react-router-dom";
+import { ActionList, FeedList } from "../components/NotificationBell";
+import { useInbox } from "../lib/useInbox";
 
 // ─── Page intentionally stripped to scaffold ──────────────────────────────
 // Per request: every dashboard widget (KPI cards, Recent Orders, Fleet Status,
@@ -17,6 +22,10 @@ import DashboardBookingForm from "../components/DashboardBookingForm";
 
 export default function AdminDashboard() {
   const { t } = useLanguage();
+  const { user } = useAuth();
+  // Booking needs orders.create (the server refuses without it). Agencies in
+  // legal "setup" mode also lack it until their documents are complete.
+  const canBook = can(user, "orders", "create");
 
   // Widget prefs — drives the modal's checkbox list. Hydrate from cache so the
   // page renders immediately when the user revisits.
@@ -70,10 +79,17 @@ export default function AdminDashboard() {
             reworked). Modal plumbing below is kept intact for re-enable. */}
       </div>
 
+      {/* Perlu tindakan + notifikasi — per user, by privilege (owner 2026-11-13). */}
+      <DashboardInbox />
+
       {/* Primary action — booking form. This replaced the old "Tambah Rekap"
           button inside Rekap Order so the booking entry-point is now front
           and center on the Dashboard for both client admins and client users. */}
-      <DashboardBookingForm />
+      <div id="booking">
+        {canBook ? <DashboardBookingForm /> : (
+          <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">{t("noBookPerm")}</div>
+        )}
+      </div>
 
       {/* Empty-state widget placeholder hidden until Stage 3. */}
 
@@ -119,5 +135,28 @@ export default function AdminDashboard() {
         </div>
       )}
     </AdminLayout>
+  );
+}
+
+function DashboardInbox() {
+  const { t } = useLanguage();
+  const navigate = useNavigate();
+  const { feed, actions, markRead } = useInbox();
+  const recent = feed.data.slice(0, 6);
+  if (!actions.data.length && !recent.length) return null;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <p className="text-sm font-bold text-slate-900 mb-2 flex items-center gap-1.5"><span className="material-symbols-outlined text-[18px] text-primary">task_alt</span>{t("nt_actions")}</p>
+        <ActionList items={actions.data} />
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-bold text-slate-900 flex items-center gap-1.5"><span className="material-symbols-outlined text-[18px] text-primary">notifications</span>{t("nt_title")}</p>
+          {feed.unread > 0 && <button type="button" onClick={() => markRead()} className="text-[11px] font-semibold text-primary cursor-pointer">{t("nt_readAll")}</button>}
+        </div>
+        <FeedList items={recent} onOpen={(n) => { if (!n.read) markRead([n.id]); if (n.link) navigate(n.link); }} />
+      </div>
+    </div>
   );
 }

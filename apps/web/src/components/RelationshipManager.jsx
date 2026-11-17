@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "./Toast";
 
+import AsyncButton from "./AsyncButton";
 // ─── Pengaturan → Mitra (Stage 2) ────────────────────────────────────────────
 // Client POV: manage the agencies that serve you (add by Agency Code).
 // Agency POV: manage your client companies (share your Agency Code; add a
@@ -83,14 +84,14 @@ export default function RelationshipManager() {
               <label className="block text-xs font-medium text-slate-600 mb-1">Kode Agency</label>
               <div className="flex gap-2">
                 <input className={inputCls + " font-mono"} value={myCode} readOnly placeholder="— belum dibuat —" />
-                <button className={btnCls} onClick={genAgencyCode}>{myCode ? "Perbarui" : "Buat"}</button>
+                <AsyncButton className={btnCls} onClick={genAgencyCode}>{myCode ? "Perbarui" : "Buat"}</AsyncButton>
               </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Kode Affiliate (link privat)</label>
               <div className="flex gap-2">
                 <input className={inputCls + " font-mono"} value={affiliate} readOnly placeholder="— belum dibuat —" />
-                <button className={btnCls} onClick={genAffiliate}>{affiliate ? "Perbarui" : "Buat"}</button>
+                <AsyncButton className={btnCls} onClick={genAffiliate}>{affiliate ? "Perbarui" : "Buat"}</AsyncButton>
               </div>
               {affiliate && <p className="text-[11px] text-slate-400 mt-1">Link: <span className="font-mono">/?ref={affiliate}</span></p>}
             </div>

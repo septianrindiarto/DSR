@@ -102,9 +102,11 @@ export default function AdminSchedule() {
     return d >= start && d <= end;
   }
 
+  // Maintenance covers its planned start → end (Armada → jadwal perawatan).
   function isMaintenanceOnDay(maint, day) {
-    const d = new Date(maint.scheduledDate);
-    return d.toDateString() === day.toDateString();
+    const dayKey = (x) => { const d = new Date(x); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
+    const k = dayKey(day), from = dayKey(maint.scheduledDate), to = dayKey(maint.endDate || maint.scheduledDate);
+    return k >= from && k <= to;
   }
 
   const isToday = (d) => d.toDateString() === new Date().toDateString();

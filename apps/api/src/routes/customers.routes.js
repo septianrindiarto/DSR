@@ -1,15 +1,19 @@
 import { Router } from 'express';
 import { customerService } from '../services/customer.service.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { activityLogger } from '../middleware/logger.js';
+import { requireAuth, requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
+import { activityLogger, auditRead } from '../middleware/logger.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
+import { requireRowScope, requireBodyRowScope } from '../middleware/row-scope.js';
+import { customers as customers } from '../db/schema.js';
 
 const router = Router();
 
 const customerSchema = z.object({
     name: z.string().min(1, 'Nama wajib diisi'),
-    email: z.string().email().optional().nullable(),
+    // '' from an empty form field → null (was rejected as invalid email).
+    email: z.preprocess((v) => (typeof v === 'string' && !v.trim() ? null : v), z.string().email().optional().nullable()),
     phone: z.string().optional().nullable(),
     whatsapp: z.string().optional().nullable(),
     customerType: z.enum(['private', 'company']).optional(),
@@ -17,9 +21,13 @@ const customerSchema = z.object({
     address: z.string().optional().nullable(),
     status: z.enum(['active', 'vip', 'inactive', 'pending']).optional(),
     notes: z.string().optional().nullable(),
+    companyName: z.string().optional().nullable(),
 });
+// PUT whitelist — unknown keys are stripped, so tenant/owner columns
+// (organizationId, createdBy, isDemo, userId) can't be rewritten via the body.
+const customerUpdateSchema = customerSchema.partial();
 
-router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/', requireAuth, requireAnyPerm('customers.view', 'orders.create', 'orders.edit'), async (req, res, next) => {
     try {
         const { search, status, customerType, sortBy, sortOrder, page, limit } = req.query;
         const result = await customerService.findAll({
@@ -32,14 +40,14 @@ router.get('/', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/stats', requireAuth, requirePerm('customers', 'view'), async (req, res, next) => {
     try {
         const stats = await customerService.getStats(req.user);
         res.json(stats);
     } catch (error) { next(error); }
 });
 
-router.get('/:id', requireAuth, requireAdmin, async (req, res, next) => {
+router.get('/:id', requireAuth, requireAnyPerm('customers.view', 'orders.view'), requireRowScope(customers), async (req, res, next) => {
     try {
         const customer = await customerService.findById(parseInt(req.params.id));
         if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
@@ -48,7 +56,7 @@ router.get('/:id', requireAuth, requireAdmin, async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-router.post('/', requireAuth, requireAdmin, validate(customerSchema), activityLogger('create', 'customer'), async (req, res, next) => {
+router.post('/', requireAuth, requirePerm('customers', 'create'), validate(customerSchema), activityLogger('create', 'customer'), async (req, res, next) => {
     try {
         const customer = await customerService.create({
             ...req.body,
@@ -60,7 +68,7 @@ router.post('/', requireAuth, requireAdmin, validate(customerSchema), activityLo
     } catch (error) { next(error); }
 });
 
-router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'customer'), async (req, res, next) => {
+router.put('/:id', requireAuth, requirePerm('customers', 'edit'), requireRowScope(customers), validate(customerUpdateSchema), activityLogger('update', 'customer'), async (req, res, next) => {
     try {
         const customer = await customerService.update(parseInt(req.params.id), req.body);
         if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
@@ -68,7 +76,7 @@ router.put('/:id', requireAuth, requireAdmin, activityLogger('update', 'customer
     } catch (error) { next(error); }
 });
 
-router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'customer'), async (req, res, next) => {
+router.delete('/:id', requireAuth, requirePerm('customers', 'delete'), requireRowScope(customers), activityLogger('delete', 'customer'), async (req, res, next) => {
     try {
         const customer = await customerService.delete(parseInt(req.params.id));
         if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
@@ -76,8 +84,32 @@ router.delete('/:id', requireAuth, requireAdmin, activityLogger('delete', 'custo
     } catch (error) { next(error); }
 });
 
+// ─── Anonymize (UU PDP "hak penghapusan") ──────────────────────────────────
+// Removes the person's identifying data but keeps the customer row and its
+// orders/invoices, because financial records must be retained. Irreversible.
+router.post('/:id/anonymize', requireAuth, requirePerm('customers', 'delete'), requireRowScope(customers), activityLogger('delete', 'customer_personal_data'), async (req, res, next) => {
+    try {
+        const id = parseInt(req.params.id);
+        const label = `Pelanggan dihapus #${id}`;
+        const { orders } = await import('../db/schema.js');
+        const { eq } = await import('drizzle-orm');
+        const { db } = await import('../db/index.js');
+        const result = await db.transaction(async (tx) => {
+            const [c] = await tx.update(customers).set({
+                name: label, email: null, phone: null, whatsapp: null, address: null, job: null, notes: null,
+                userId: null, status: 'inactive', updatedAt: new Date(),
+            }).where(eq(customers.id, id)).returning({ id: customers.id });
+            if (!c) return null;
+            await tx.update(orders).set({ customerName: label, updatedAt: new Date() }).where(eq(orders.customerId, id));
+            return c;
+        });
+        if (!result) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
+        res.json({ id, anonymized: true });
+    } catch (error) { next(error); }
+});
+
 // ─── Bulk delete ──────────────────────────────────────────────────────────
-router.post('/bulk-delete', requireAuth, requireAdmin, activityLogger('delete', 'customer'), async (req, res, next) => {
+router.post('/bulk-delete', requireAuth, requirePerm('customers', 'delete'), requireBodyRowScope(customers, (b) => b.ids), activityLogger('delete', 'customer'), async (req, res, next) => {
     try {
         const { ids } = req.body || {};
         if (!Array.isArray(ids) || ids.length === 0)
@@ -91,7 +123,7 @@ router.post('/bulk-delete', requireAuth, requireAdmin, activityLogger('delete', 
 });
 
 // ─── Deduplicate by name ──────────────────────────────────────────────────
-router.post('/deduplicate', requireAuth, requireAdmin, activityLogger('update', 'customer'), async (req, res, next) => {
+router.post('/deduplicate', requireAuth, requireSuperAdmin, activityLogger('update', 'customer'), async (req, res, next) => {
     try {
         const result = await customerService.deduplicateByName();
         res.json({
@@ -102,15 +134,16 @@ router.post('/deduplicate', requireAuth, requireAdmin, activityLogger('update', 
 });
 
 // ─── Bulk export — full snapshot for backup or external editing ─────────────
-router.get('/data/export', requireAuth, requireAdmin, async (_req, res, next) => {
+router.get('/data/export', requireAuth, requirePerm('customers', 'view'), auditRead('export', 'customers'), async (req, res, next) => {
     try {
-        const result = await customerService.findAll({ limit: 100000, page: 1 });
+        // Scoped like the list — never another tenant's customers.
+        const result = await customerService.findAll({ limit: 100000, page: 1, scopeUser: req.user });
         res.json(result.data || []);
     } catch (error) { next(error); }
 });
 
 // ─── Bulk import — accepts an array of customer rows; dedupe by phone, email, or name ───
-router.post('/data/import', requireAuth, requireAdmin, activityLogger('create', 'customer'), async (req, res, next) => {
+router.post('/data/import', requireAuth, requirePerm('customers', 'create'), activityLogger('create', 'customer'), async (req, res, next) => {
     try {
         const items = req.body;
         if (!Array.isArray(items) || items.length === 0) {

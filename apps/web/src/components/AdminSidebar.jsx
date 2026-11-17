@@ -2,12 +2,14 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../context/AuthContext";
-import { visibleNavFor, FEATURES, canAccess } from "../lib/permissions";
+import { visibleNavFor, FEATURES, canAccess, can } from "../lib/permissions";
+import FeatureAccessModal from "./FeatureAccessModal";
 
+import AsyncButton from "./AsyncButton";
 export default function AdminSidebar({ mobileMenuOpen, onClose }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { t, lang, toggleLanguage } = useLanguage();
+  const { t, lang, toggleLanguage, multiLanguage } = useLanguage();
   const { user, logout } = useAuth();
 
   // Desktop collapse (icon-rail). Persisted. On the mobile overlay we always
@@ -22,11 +24,13 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
     return next;
   });
   const collapsedNow = collapsed && !mobileMenuOpen;
+  const [showAccess, setShowAccess] = useState(false);
 
   // `key` must match a FEATURES value so permissions can gate the item.
   const allNavItems = [
     { key: FEATURES.DASHBOARD, label: t('dashboard'), icon: "dashboard", path: "/admin/dashboard" },
     { key: FEATURES.FLEET, label: t('fleet'), icon: "directions_car", path: "/admin/fleet" },
+    { key: FEATURES.FLEETCARE, label: t('fc_menu'), icon: "build_circle", path: "/admin/fleet-care" },
     { key: FEATURES.ORDERS, label: t('orderRecap'), icon: "receipt_long", path: "/admin/orders" },
     { key: FEATURES.SCHEDULE, label: t('schedule'), icon: "calendar_month", path: "/admin/schedule" },
     { key: FEATURES.CUSTOMERS, label: t('customers'), icon: "group", path: "/admin/customers" },
@@ -34,6 +38,11 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
     { key: FEATURES.ANALYTICS, label: t('analytics'), icon: "analytics", path: "/admin/analytics" },
     { key: FEATURES.FINANCE, label: t('finance'), icon: "payments", path: "/admin/finance" },
     { key: FEATURES.DOCUMENTS, label: t('documents'), icon: "description", path: "/admin/documents" },
+    { key: FEATURES.PRICING, label: t('prc_menu'), icon: "sell", path: "/admin/pricing" },
+    // Kontrak & Perusahaan: Kontrak · Form · List Data (tabs).
+    { key: FEATURES.CONTRACTHUB, label: t('hub_menu'), icon: "contract", path: "/admin/contracts" },
+    // Former Portal Perusahaan + audit trail (owner 2026-11-13).
+    { key: FEATURES.REPORTS, label: t('ra_menu'), icon: "monitoring", path: "/admin/reports" },
   ];
 
   // Permission gates — single source of truth is canAccess(user, feature)
@@ -47,7 +56,9 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
   const adminNavItems = [];
   if (canSeeUsers) adminNavItems.push({ label: t('userManagement'), icon: "manage_accounts", path: "/admin/users" });
   if (canSeeAccessRequests) adminNavItems.push({ label: t('claimOrders'), icon: "how_to_reg", path: "/admin/claim-orders" });
-  if (user?.role === 'superadmin') adminNavItems.push({ label: t('organizationsMenu'), icon: "corporate_fare", path: "/admin/organizations" });
+  // Queue of "Minta akses" requests from the organisation's users (approve / reject).
+  if (can(user, 'users', 'edit')) adminNavItems.push({ label: t('accessRequests'), icon: "key", path: "/admin/access-requests" });
+  // Organisasi now lives in Manajemen Pengguna → Organisasi.
 
   const handleLogout = async () => {
     try {
@@ -145,6 +156,7 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
 
         {/* Bottom Section: Language Toggle + User + Logout. */}
         <div className="flex-shrink-0 p-3 border-t border-neutral-800 space-y-2">
+          {multiLanguage && (
           <button
             onClick={toggleLanguage}
             title={collapsedNow ? (lang === 'id' ? 'Indonesia' : 'English') : undefined}
@@ -154,6 +166,19 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
             {!collapsedNow && <span className="text-sm font-medium">{lang === 'id' ? '🇮🇩 Indonesia' : '🇬🇧 English'}</span>}
             {!collapsedNow && <span className="ml-auto text-xs bg-neutral-700 px-2 py-0.5 rounded text-neutral-300 uppercase">{lang}</span>}
           </button>
+          )}
+
+          {/* Ask for menus this account can't open yet (hidden menus can't be clicked). */}
+          {user?.role !== 'superadmin' && (
+            <button
+              onClick={() => setShowAccess(true)}
+              title={collapsedNow ? t('requestFeatureAccess') : undefined}
+              className={`w-full flex items-center gap-3 py-2.5 rounded-lg hover:bg-sidebar-hover text-neutral-400 hover:text-white transition-colors cursor-pointer ${collapsedNow ? "justify-center px-0" : "px-4"}`}
+            >
+              <span className="material-symbols-outlined text-[22px]">lock_open</span>
+              {!collapsedNow && <span className="text-sm font-medium">{t('requestFeatureAccess')}</span>}
+            </button>
+          )}
 
           {/* User Profile */}
           <div className={`flex items-center gap-3 py-2 ${collapsedNow ? "justify-center px-0" : "px-4"}`} title={collapsedNow ? (user?.name || 'Admin') : undefined}>
@@ -168,16 +193,17 @@ export default function AdminSidebar({ mobileMenuOpen, onClose }) {
             )}
           </div>
 
-          <button
+          <AsyncButton
             onClick={handleLogout}
             title={collapsedNow ? t('logout') : undefined}
             className={`w-full flex items-center gap-3 py-3 rounded-lg hover:bg-red-900/20 text-neutral-400 hover:text-primary transition-colors group cursor-pointer ${collapsedNow ? "justify-center px-0" : "px-4"}`}
           >
             <span className="material-symbols-outlined text-[22px]">logout</span>
             {!collapsedNow && <span className="text-sm font-medium">{t('logout')}</span>}
-          </button>
+          </AsyncButton>
         </div>
       </aside>
+      {showAccess && <FeatureAccessModal user={user} onClose={() => setShowAccess(false)} />}
     </>
   );
 }

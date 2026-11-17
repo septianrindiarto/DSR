@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { scheduleService } from '../services/schedule.service.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { ROLE_GROUPS } from '../services/permissions.service.js';
+import { requirePerm, requireAnyPerm } from '../middleware/permission.js';
 
 const router = Router();
 
@@ -11,7 +12,7 @@ const router = Router();
 // the Jadwal nav item. The service already accepts scopeUser and applies
 // buildScopeConditions, so opening the guard to ANY_AUTHENTICATED is safe:
 // agency users still see all rows; clients see only org/own rows.
-router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.get('/', requireAuth, requirePerm('schedule', 'view'), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         if (!startDate || !endDate) {
@@ -35,7 +36,7 @@ router.get('/', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (
     } catch (error) { next(error); }
 });
 
-router.get('/:carId', requireAuth, requireRole(ROLE_GROUPS.ANY_AUTHENTICATED), async (req, res, next) => {
+router.get('/:carId', requireAuth, requirePerm('schedule', 'view'), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         const now = new Date();

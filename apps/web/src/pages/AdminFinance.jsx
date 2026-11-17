@@ -1,528 +1,190 @@
-import { useState, useEffect, useMemo } from "react";
+// ─── Keuangan — Books v2 (double-entry, SAK EMKM, accrual basis) ────────────
+// Tabs: Catat Transaksi (guided input + auto-posting status) · Ringkasan ·
+// Transaksi (Jurnal Umum) · Impor Buku Kas · Buku Besar ·
+// Neraca Saldo · Laba Rugi · Neraca · Arus Kas · Perubahan Ekuitas ·
+// Daftar Akun · Kunci Periode · Arsip (jurnal lama, read-only) · Dokumen.
+// Backend: /api/books (org-scoped). The legacy /api/journal data is shown
+// read-only under "Arsip".
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
-import { api, apiCache, swr, API_BASE } from "../lib/api";
-import { useToast } from '../components/Toast';
-import PeriodSelector from "../components/finance/PeriodSelector";
-import ImportModal from "../components/finance/ImportModal";
-import ExportModal from "../components/finance/ExportModal";
-import { TabJurnal, TabBukuBesar, TabNeracaSaldo, TabLabaRugi, TabArusKas, TabNeraca } from "../components/finance/ReportTabs";
+import { api, apiCache, swr } from "../lib/api";
+import { useToast } from "../components/Toast";
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
+import { TabJurnal } from "../components/finance/ReportTabs";
+import TransactionsTab from "../components/books/TransactionsTab";
+import ImportCashbookTab from "../components/books/ImportCashbookTab";
+import QuickEntryTab from "../components/books/QuickEntryTab";
+import { SummaryTab, IncomeTab, BalanceTab, CashFlowTab, EquityTab, TrialBalanceTab, LedgerTab } from "../components/books/ReportsTabs";
+import { AccountsTab, LocksTab } from "../components/books/SetupTabs";
+import { PeriodPicker } from "../components/books/shared";
+import { rangeFor } from "../components/books/utils";
 
+import AsyncButton from "../components/AsyncButton";
+// label = i18n key (finance.id.js)
 const TABS = [
-  { id: "jurnal",       label: "Jurnal Umum",    icon: "menu_book" },
-  { id: "buku-besar",   label: "Buku Besar",     icon: "account_tree" },
-  { id: "neraca-saldo", label: "Neraca Saldo",   icon: "balance" },
-  { id: "laba-rugi",    label: "Laba Rugi",      icon: "trending_up" },
-  { id: "arus-kas",     label: "Arus Kas",       icon: "payments" },
-  { id: "neraca",       label: "Neraca",         icon: "account_balance" },
-  { id: "coa",          label: "Daftar Akun",    icon: "list_alt" },
-  { id: "periods",      label: "Kunci Periode",  icon: "lock" },
-  { id: "dokumen",      label: "Dokumen",        icon: "folder" },
+  { id: "catat",        label: "fin_tab_quick",      icon: "edit_note" },
+  { id: "ringkasan",    label: "fin_tab_summary",    icon: "insights" },
+  { id: "transaksi",    label: "fin_tab_journal",    icon: "menu_book" },
+  { id: "impor",        label: "fin_tab_import",     icon: "upload_file" },
+  { id: "buku-besar",   label: "fin_ledger",         icon: "account_tree" },
+  { id: "neraca-saldo", label: "fin_tb_title",       icon: "balance" },
+  { id: "laba-rugi",    label: "fin_tab_income",     icon: "trending_up" },
+  { id: "neraca",       label: "fin_tab_balance",    icon: "account_balance" },
+  { id: "arus-kas",     label: "fin_tab_cashflow",   icon: "payments" },
+  { id: "ekuitas",      label: "fin_tab_equity",     icon: "pie_chart" },
+  { id: "coa",          label: "fin_tab_coa",        icon: "list_alt" },
+  { id: "periods",      label: "fin_tab_locks",      icon: "lock" },
+  { id: "arsip",        label: "fin_tab_archive",    icon: "inventory_2" },
+  { id: "dokumen",      label: "fin_tab_docs",       icon: "folder" },
 ];
+// Tabs that use the period picker.
+const PERIOD_TABS = new Set(["transaksi", "buku-besar", "neraca-saldo", "laba-rugi", "neraca", "arus-kas", "ekuitas"]);
 
 export default function AdminFinance() {
   const { t } = useLanguage();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState("jurnal");
-  const [showImport, setShowImport] = useState(false);
-  const [showExport, setShowExport] = useState(false);
-  const [period, setPeriod] = useState({ type: "monthly", year: new Date().getFullYear(), month: 0, quarter: 1, semester: 1 });
+  const [activeTab, setActiveTab] = useState("catat");
+  const now = new Date();
+  const [period, setPeriod] = useState({
+    type: "monthly", year: now.getFullYear(), month: now.getMonth() + 1, quarter: Math.floor(now.getMonth() / 3) + 1,
+    semester: now.getMonth() < 6 ? 1 : 2, compare: false, from: "", to: "",
+  });
+  const range = useMemo(() => rangeFor(period), [period]);
+  // RBAC v2 — finance action permissions passed to every tab.
+  const { user } = useAuth();
+  const fin = useMemo(() => ({
+    create: can(user, "finance", "create"), edit: can(user, "finance", "edit"),
+    post: can(user, "finance", "post"), lock: can(user, "finance", "lock"),
+  }), [user]);
 
-  // Documents sub-section state
+  // Accounts are shared by every tab.
+  const [accounts, setAccounts] = useState([]);
+  const loadAccounts = useCallback(() => {
+    api.books.accounts().then((a) => setAccounts(Array.isArray(a) ? a : [])).catch((e) => toast.error(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+
+  // Documents sub-section
   const [docs, setDocs] = useState([]);
   const [docsLoading, setDocsLoading] = useState(false);
-
-  useEffect(() => { loadStats(); }, []);
-  useEffect(() => { if (activeTab === "dokumen") loadDocs(); }, [activeTab]);
-
-  function loadStats() {
-  }
-
   function loadDocs() {
     setDocsLoading(true);
-    swr("finance:docs", () => api.finance.list("limit=100"), r => {
-      setDocs(r?.data || []); setDocsLoading(false);
-    }).catch(() => setDocsLoading(false));
+    swr("finance:docs", () => api.finance.list("limit=100"), (r) => { setDocs(r?.data || []); setDocsLoading(false); })
+      .catch(() => setDocsLoading(false));
   }
+  useEffect(() => { if (activeTab === "dokumen") loadDocs(); }, [activeTab]);
 
-  function handleImportSuccess() {
-    apiCache.invalidate("journal");
-    loadStats();
-  }
-
-  const periodParams = useMemo(() => {
+  // Legacy archive needs its old query-string period.
+  const legacyParams = useMemo(() => {
     const p = new URLSearchParams();
     p.set("year", period.year);
-    if (period.type === "monthly" && period.month > 0) p.set("month", period.month);
+    if (period.type === "monthly") p.set("month", period.month);
     if (period.type === "quarterly") p.set("quarter", period.quarter);
     if (period.type === "semesterly") p.set("semester", period.semester);
     return p.toString();
   }, [period]);
 
-  const MONTH_LABELS = ["","Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
-  const periodLabel = useMemo(() => {
-    const y = period.year;
-    if (period.type === "monthly" && period.month > 0) return `${MONTH_LABELS[period.month]} ${y}`;
-    if (period.type === "quarterly") return `Q${period.quarter} ${y}`;
-    if (period.type === "semesterly") return `S${period.semester} ${y}`;
-    return `Tahun ${y}`;
-  }, [period]);
-
-  function goToDokumen() { setActiveTab("dokumen"); loadDocs(); }
-
-  const fmt = v => Number(v || 0).toLocaleString("id-ID");
-
-  const showPeriodSelector = !["coa", "periods", "dokumen"].includes(activeTab);
+  const [reloadKey, setReloadKey] = useState(0);
+  const bump = () => { setReloadKey((k) => k + 1); loadAccounts(); };
 
   return (
     <AdminLayout>
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{t("finance")}</h1>
-          <p className="text-slate-500 text-sm mt-1">Kelola jurnal, laporan keuangan, dan dokumen</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowExport(true)} className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors cursor-pointer">
-            <span className="material-symbols-outlined text-[18px]">download</span>Export
-          </button>
-          <button onClick={() => setShowImport(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-white font-medium hover:bg-primary-dark transition-colors shadow-sm cursor-pointer">
-            <span className="material-symbols-outlined text-[20px]">upload</span>Import Data
-          </button>
+          <p className="text-slate-500 text-sm mt-1">{t("fin_pageSubtitle")}</p>
         </div>
       </div>
 
-
-      {/* Period Selector — only for financial report tabs */}
-      {showPeriodSelector && (
-        <div className="mb-4">
-          <PeriodSelector period={period} onChange={setPeriod} />
-        </div>
-      )}
-
-      {/* Report Tabs */}
-      <div className="flex items-center gap-1 overflow-x-auto mb-6 border-b border-slate-200 pb-px">
-        {TABS.map(tab => (
+      <div className="flex items-center gap-1 overflow-x-auto mb-4 border-b border-slate-200 pb-px">
+        {TABS.map((tab) => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 border-b-2 text-sm font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-              activeTab === tab.id ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-slate-700"
-            }`}>
-            <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>{tab.label}
+            className={`flex items-center gap-1.5 px-3 py-2.5 border-b-2 text-sm font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === tab.id ? "border-primary text-primary" : "border-transparent text-slate-400 hover:text-slate-700"}`}>
+            <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>{t(tab.label)}
           </button>
         ))}
       </div>
 
-      {/* Tab Content */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-        {activeTab === "jurnal"       && <TabJurnal params={periodParams} periodLabel={periodLabel} onClearSuccess={handleImportSuccess} />}
-        {activeTab === "buku-besar"   && <TabBukuBesar params={periodParams} periodLabel={periodLabel} onGoToDokumen={goToDokumen} />}
-        {activeTab === "neraca-saldo" && <TabNeracaSaldo params={periodParams} periodLabel={periodLabel} onGoToDokumen={goToDokumen} />}
-        {activeTab === "laba-rugi"    && <TabLabaRugi params={periodParams} periodLabel={periodLabel} onGoToDokumen={goToDokumen} />}
-        {activeTab === "arus-kas"     && <TabArusKas params={periodParams} periodLabel={periodLabel} onGoToDokumen={goToDokumen} />}
-        {activeTab === "neraca"       && <TabNeraca params={periodParams} periodLabel={periodLabel} onGoToDokumen={goToDokumen} />}
-        {activeTab === "coa"          && <TabChartOfAccounts />}
-        {activeTab === "periods"      && <TabLockedPeriods />}
+      {(PERIOD_TABS.has(activeTab) || activeTab === "ringkasan" || activeTab === "arsip") && (
+        <div className="mb-4 flex items-center gap-3 flex-wrap">
+          <PeriodPicker period={period} onChange={setPeriod} />
+          {PERIOD_TABS.has(activeTab) && <span className="text-xs text-slate-500">{range.label}{period.compare ? ` vs ${range.prevLabel}` : ""}</span>}
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" key={reloadKey}>
+        {activeTab === "catat"        && <QuickEntryTab accounts={accounts} onChanged={bump} onGo={setActiveTab} fin={fin} />}
+        {activeTab === "ringkasan"    && <SummaryTab year={period.type === "custom" && period.from ? Number(period.from.slice(0, 4)) : period.year} onGo={setActiveTab} />}
+        {activeTab === "transaksi"    && <TransactionsTab accounts={accounts} range={range} onChanged={bump} fin={fin} />}
+        {activeTab === "impor"        && (fin.create ? <ImportCashbookTab accounts={accounts} onDone={bump} fin={fin} /> : <p className="text-sm text-slate-400 text-center py-10">{t("fin_noImportPermission")}</p>)}
+        {activeTab === "buku-besar"   && <LedgerTab range={range} accounts={accounts} />}
+        {activeTab === "neraca-saldo" && <TrialBalanceTab range={range} />}
+        {activeTab === "laba-rugi"    && <IncomeTab range={range} compare={period.compare} />}
+        {activeTab === "neraca"       && <BalanceTab range={range} compare={period.compare} />}
+        {activeTab === "arus-kas"     && <CashFlowTab range={range} />}
+        {activeTab === "ekuitas"      && <EquityTab range={range} />}
+        {activeTab === "coa"          && <AccountsTab accounts={accounts} onChanged={loadAccounts} fin={fin} />}
+        {activeTab === "periods"      && <LocksTab fin={fin} />}
+        {activeTab === "arsip"        && (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {t("fin_archiveNote")}
+            </div>
+            <TabJurnal params={legacyParams} onClearSuccess={() => apiCache.invalidate("journal")} />
+          </div>
+        )}
         {activeTab === "dokumen"      && <DokumenSection docs={docs} loading={docsLoading} onRefresh={loadDocs} />}
       </div>
-
-      {/* Modals */}
-      {showImport && <ImportModal onClose={() => setShowImport(false)} onSuccess={handleImportSuccess} />}
-      {showExport && <ExportModal onClose={() => setShowExport(false)} periodParams={periodParams} />}
     </AdminLayout>
-  );
-}
-
-// ─── Chart of Accounts Tab ────────────────────────────────────────────────────
-function TabChartOfAccounts() {
-  const toast = useToast();
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ code: "", name: "", type: "asset", normalBalance: "debit", description: "" });
-  const [saving, setSaving] = useState(false);
-
-  const TYPE_OPTS = [
-    { value: "asset",     label: "Aset" },
-    { value: "liability", label: "Liabilitas" },
-    { value: "equity",    label: "Ekuitas" },
-    { value: "income",    label: "Pendapatan" },
-    { value: "expense",   label: "Beban" },
-  ];
-  const TYPE_COLORS = {
-    asset:     "bg-blue-100 text-blue-700",
-    liability: "bg-red-100 text-red-700",
-    equity:    "bg-green-100 text-green-700",
-    income:    "bg-emerald-100 text-emerald-700",
-    expense:   "bg-orange-100 text-orange-700",
-  };
-
-  const load = () => {
-    setLoading(true);
-    swr("accounts:list", () => api.accounts.list(), r => { setAccounts(r || []); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-  useEffect(() => { load(); }, []);
-
-  function openAdd() {
-    setEditId(null);
-    setForm({ code: "", name: "", type: "asset", normalBalance: "debit", description: "" });
-    setShowForm(true);
-  }
-
-  function openEdit(a) {
-    setEditId(a.id);
-    setForm({ code: a.code, name: a.name, type: a.type, normalBalance: a.normalBalance, description: a.description || "" });
-    setShowForm(true);
-  }
-
-  async function handleSave() {
-    if (!form.code || !form.name) return toast.error("Kode dan nama wajib diisi.");
-    setSaving(true);
-    try {
-      if (editId) await api.accounts.update(editId, form);
-      else await api.accounts.create(form);
-      apiCache.invalidate("accounts");
-      setShowForm(false);
-      load();
-    } catch (e) { toast.error(e.message); }
-    finally { setSaving(false); }
-  }
-
-  async function handleDelete(a) {
-    if (!confirm(`Hapus akun "${a.code} – ${a.name}"?`)) return;
-    try { await api.accounts.delete(a.id); apiCache.invalidate("accounts"); load(); }
-    catch (e) { toast.error(e.message); }
-  }
-
-  // Auto-set normalBalance when type changes
-  function handleTypeChange(type) {
-    const nb = ["asset", "expense"].includes(type) ? "debit" : "credit";
-    setForm(p => ({ ...p, type, normalBalance: nb }));
-  }
-
-  if (loading) return <div className="py-12 text-center text-slate-400">Memuat daftar akun...</div>;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <p className="font-semibold text-slate-800">Daftar Akun (Chart of Accounts)</p>
-          <p className="text-xs text-slate-500 mt-0.5">{accounts.length} akun terdaftar — digunakan untuk klasifikasi otomatis laporan keuangan</p>
-        </div>
-        <button onClick={openAdd}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium cursor-pointer hover:opacity-90">
-          <span className="material-symbols-outlined text-[18px]">add</span>Tambah Akun
-        </button>
-      </div>
-
-      {accounts.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">Belum ada akun. Klik Tambah Akun untuk mulai.</div>
-      ) : (
-        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-          <table className="w-full text-sm">
-            <thead><tr className="bg-slate-50 text-[11px] font-bold uppercase text-slate-400 tracking-wider border-b">
-              <th className="px-4 py-3 text-left">Kode</th>
-              <th className="px-4 py-3 text-left">Nama Akun</th>
-              <th className="px-4 py-3 text-left">Tipe</th>
-              <th className="px-4 py-3 text-left">Saldo Normal</th>
-              <th className="px-4 py-3 text-left">Deskripsi</th>
-              <th className="px-4 py-3 text-right">Aksi</th>
-            </tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {accounts.map(a => (
-                <tr key={a.id} className="hover:bg-slate-50/60">
-                  <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-700">{a.code}</td>
-                  <td className="px-4 py-2.5 font-medium">{a.name}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${TYPE_COLORS[a.type] || "bg-slate-100 text-slate-600"}`}>
-                      {TYPE_OPTS.find(t => t.value === a.type)?.label || a.type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-xs capitalize text-slate-600">{a.normalBalance}</td>
-                  <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[200px] truncate">{a.description || "-"}</td>
-                  <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => openEdit(a)} className="text-slate-400 hover:text-primary mr-2 cursor-pointer">
-                      <span className="material-symbols-outlined text-[18px]">edit</span>
-                    </button>
-                    <button onClick={() => handleDelete(a)} className="text-slate-400 hover:text-red-500 cursor-pointer">
-                      <span className="material-symbols-outlined text-[18px]">delete</span>
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Form Modal */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <div className="p-5 border-b flex items-center justify-between">
-              <h3 className="font-bold text-lg">{editId ? "Edit Akun" : "Tambah Akun"}</h3>
-              <button onClick={() => setShowForm(false)} className="text-slate-400 cursor-pointer">
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Kode Akun *</label>
-                  <input value={form.code} onChange={e => setForm(p => ({ ...p, code: e.target.value }))}
-                    placeholder="1-1000" className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Tipe *</label>
-                  <select value={form.type} onChange={e => handleTypeChange(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm">
-                    {TYPE_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Nama Akun *</label>
-                <input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
-                  placeholder="Kas, Hutang Usaha, Pendapatan Sewa..." className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Saldo Normal *</label>
-                <div className="flex gap-3">
-                  {["debit", "credit"].map(nb => (
-                    <label key={nb} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border cursor-pointer transition-colors ${
-                      form.normalBalance === nb ? "border-primary bg-primary/5 text-primary font-semibold" : "border-slate-200 hover:bg-slate-50"
-                    }`}>
-                      <input type="radio" name="nb" value={nb} checked={form.normalBalance === nb}
-                        onChange={() => setForm(p => ({ ...p, normalBalance: nb }))} className="hidden" />
-                      <span className="text-sm capitalize">{nb === "debit" ? "Debit" : "Kredit"}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Deskripsi</label>
-                <input value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
-                  placeholder="Keterangan singkat..." className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" />
-              </div>
-            </div>
-            <div className="p-5 border-t bg-slate-50/50 rounded-b-2xl flex gap-3">
-              <button onClick={() => setShowForm(false)}
-                className="flex-1 py-2.5 border border-slate-200 bg-white rounded-lg text-sm font-medium text-slate-600 cursor-pointer">Batal</button>
-              <button onClick={handleSave} disabled={saving}
-                className="flex-1 py-2.5 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 cursor-pointer">
-                {saving ? "Menyimpan..." : "Simpan"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --- Locked Periods Tab ---
-const MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
-
-function TabLockedPeriods() {
-  const toast = useToast();
-  const [periods, setPeriods] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ year: new Date().getFullYear(), month: "", scope: "monthly" });
-  const [saving, setSaving] = useState(false);
-
-  const load = () => {
-    setLoading(true);
-    swr("journal:periods", () => api.journal.listLockedPeriods(), r => { setPeriods(r || []); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-  useEffect(() => { load(); }, []);
-
-  async function handleLock() {
-    setSaving(true);
-    try {
-      await api.journal.lockPeriod(
-        Number(form.year),
-        form.scope === "monthly" ? Number(form.month) : null,
-      );
-      apiCache.invalidate("journal:periods");
-      setShowForm(false);
-      load();
-    } catch (e) { toast.error(e.message); }
-    finally { setSaving(false); }
-  }
-
-  async function handleUnlock(p) {
-    const label = p.month ? `${MONTHS[p.month]} ${p.year}` : `Seluruh tahun ${p.year}`;
-    if (!confirm(`Buka kunci periode ${label}?`)) return;
-    try {
-      await api.journal.unlockPeriod(p.id);
-      apiCache.invalidate("journal:periods");
-      load();
-    } catch (e) { toast.error(e.message); }
-  }
-
-  const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
-
-  if (loading) return <div className="py-12 text-center text-slate-400">Memuat periode terkunci...</div>;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <p className="font-semibold text-slate-800">Penguncian Periode</p>
-          <p className="text-xs text-slate-500 mt-0.5">Periode yang dikunci tidak bisa ditambah, diedit, atau dihapus entri jurnalnya.</p>
-        </div>
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-800 text-white text-sm font-medium cursor-pointer hover:bg-slate-700">
-          <span className="material-symbols-outlined text-[18px]">lock</span>Kunci Periode
-        </button>
-      </div>
-
-      {periods.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">Belum ada periode yang dikunci.</div>
-      ) : (
-        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-          <table className="w-full text-sm">
-            <thead><tr className="bg-slate-50 text-[11px] font-bold uppercase text-slate-400 tracking-wider border-b">
-              <th className="px-4 py-3 text-left">Periode</th>
-              <th className="px-4 py-3 text-left">Dikunci Pada</th>
-              <th className="px-4 py-3 text-right">Aksi</th>
-            </tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {periods.map(p => (
-                <tr key={p.id} className="hover:bg-slate-50/60">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[16px] text-slate-400">lock</span>
-                      <span className="font-semibold text-slate-800">
-                        {p.month ? `${MONTHS[p.month]} ${p.year}` : `Seluruh Tahun ${p.year}`}
-                      </span>
-                      {!p.month && <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">TAHUN PENUH</span>}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-500">{fmtDate(p.lockedAt)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => handleUnlock(p)}
-                      className="flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:bg-red-50 hover:border-red-200 hover:text-red-600 cursor-pointer ml-auto">
-                      <span className="material-symbols-outlined text-[15px]">lock_open</span>Buka Kunci
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
-            <div className="p-5 border-b flex items-center justify-between">
-              <h3 className="font-bold text-lg">Kunci Periode</h3>
-              <button onClick={() => setShowForm(false)} className="text-slate-400 cursor-pointer">
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
-                <p className="font-semibold">Perhatian!</p>
-                <p className="mt-0.5">Setelah dikunci, entri jurnal tidak bisa ditambah, diedit, atau dihapus. Gunakan fitur Reversal untuk koreksi.</p>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Cakupan Kunci</label>
-                <div className="flex gap-2">
-                  {[{ value: "monthly", label: "Bulanan" }, { value: "annual", label: "Satu Tahun" }].map(o => (
-                    <label key={o.value} className={`flex-1 flex items-center justify-center py-2.5 rounded-lg border cursor-pointer transition-colors ${
-                      form.scope === o.value ? "border-slate-800 bg-slate-800 text-white font-semibold" : "border-slate-200 hover:bg-slate-50"
-                    }`}>
-                      <input type="radio" name="scope" value={o.value} checked={form.scope === o.value}
-                        onChange={() => setForm(p => ({ ...p, scope: o.value }))} className="hidden" />
-                      <span className="text-sm">{o.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Tahun *</label>
-                  <input type="number" value={form.year} min="2000" max="2100"
-                    onChange={e => setForm(p => ({ ...p, year: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" />
-                </div>
-                {form.scope === "monthly" && (
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Bulan *</label>
-                    <select value={form.month} onChange={e => setForm(p => ({ ...p, month: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm">
-                      <option value="">Pilih bulan</option>
-                      {MONTHS.slice(1).map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
-                    </select>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="p-5 border-t bg-slate-50/50 rounded-b-2xl flex gap-3">
-              <button onClick={() => setShowForm(false)}
-                className="flex-1 py-2.5 border border-slate-200 bg-white rounded-lg text-sm font-medium text-slate-600 cursor-pointer">Batal</button>
-              <button onClick={handleLock} disabled={saving || (form.scope === "monthly" && !form.month)}
-                className="flex-1 py-2.5 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1.5">
-                <span className="material-symbols-outlined text-[16px]">lock</span>
-                {saving ? "Mengunci..." : "Kunci Sekarang"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 
 // --- Dokumen Sub-section ---
 function DokumenSection({ docs, loading, onRefresh }) {
   const toast = useToast();
+  const { t } = useLanguage();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", category: "keuangan_inti", period: "", fileUrl: "", fileType: "" });
 
-  const CATS = [
-    { value: "keuangan_inti", label: "Keuangan Inti" }, { value: "perpajakan", label: "Perpajakan" },
-    { value: "aset_armada", label: "Aset & Armada" }, { value: "kepatuhan", label: "Kepatuhan" },
-    { value: "operasional", label: "Operasional" }, { value: "payroll", label: "Payroll" },
-  ];
+  const CATS = ["keuangan_inti", "perpajakan", "aset_armada", "kepatuhan", "operasional", "payroll"]
+    .map((value) => ({ value, label: t(`fin_docCat_${value}`) }));
   const fmtDate = d => d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "-";
 
   async function handleSave() {
     try { await api.finance.create(form); apiCache.invalidate("finance"); setShowForm(false); onRefresh(); } catch (e) { toast.error(e.message); }
   }
   async function handleDelete(id) {
-    if (!confirm("Hapus dokumen?")) return;
+    if (!confirm(t("fin_doc_confirmDelete"))) return;
     try { await api.finance.delete(id); apiCache.invalidate("finance"); onRefresh(); } catch (e) { toast.error(e.message); }
   }
   async function handleUpload(e) {
     const file = e.target.files?.[0]; if (!file) return;
     const fd = new FormData(); fd.append("file", file);
-    try { const r = await api.finance.upload(fd); setForm(p => ({ ...p, fileUrl: r.url, fileType: file.name.split(".").pop().toUpperCase() })); } catch { toast.error("Upload gagal"); }
+    try { const r = await api.finance.upload(fd); setForm(p => ({ ...p, fileUrl: r.url, fileType: file.name.split(".").pop().toUpperCase() })); } catch (err) { toast.error(err.message || t("fin_doc_uploadFailed")); }
   }
 
-  if (loading) return <div className="py-12 text-center text-slate-400">Memuat dokumen...</div>;
+  if (loading) return <div className="py-12 text-center text-slate-400">{t("loading")}</div>;
 
   return (
     <div>
       <div className="flex justify-between items-center mb-4">
-        <p className="text-sm text-slate-500">Upload dan kelola dokumen keuangan manual</p>
+        <p className="text-sm text-slate-500">{t("fin_doc_subtitle")}</p>
         <button onClick={() => setShowForm(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium cursor-pointer">
-          <span className="material-symbols-outlined text-[18px]">upload_file</span>Upload Dokumen
+          <span className="material-symbols-outlined text-[18px]">upload_file</span>{t("fin_doc_upload")}
         </button>
       </div>
       {docs.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">Belum ada dokumen</div>
+        <div className="py-12 text-center text-slate-400">{t("fin_doc_empty")}</div>
       ) : (
         <table className="w-full text-sm">
           <thead><tr className="bg-slate-50 text-[11px] font-bold uppercase text-slate-400 border-b">
-            <th className="px-4 py-3 text-left">Nama</th><th className="px-4 py-3 text-left">Kategori</th>
-            <th className="px-4 py-3 text-left">Periode</th><th className="px-4 py-3 text-left">Tanggal</th>
-            <th className="px-4 py-3 text-right">Aksi</th>
+            <th className="px-4 py-3 text-left">{t("fin_colName")}</th><th className="px-4 py-3 text-left">{t("fin_category")}</th>
+            <th className="px-4 py-3 text-left">{t("fin_period")}</th><th className="px-4 py-3 text-left">{t("fin_colDate")}</th>
+            <th className="px-4 py-3 text-right">{t("actions")}</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-100">
             {docs.map(d => (
@@ -532,8 +194,8 @@ function DokumenSection({ docs, loading, onRefresh }) {
                 <td className="px-4 py-2.5 text-xs">{d.period || "-"}</td>
                 <td className="px-4 py-2.5 text-xs">{fmtDate(d.createdAt)}</td>
                 <td className="px-4 py-2.5 text-right">
-                  {d.fileUrl && <a href={`${API_BASE}${d.fileUrl}`} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-primary mr-2"><span className="material-symbols-outlined text-[18px]">download</span></a>}
-                  <button onClick={() => handleDelete(d.id)} className="text-slate-400 hover:text-red-500 cursor-pointer"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+                  {d.fileUrl && <AsyncButton type="button" onClick={() => api.finance.openFile(d.id).catch((e) => toast.error(e.message))} className="text-slate-400 hover:text-primary mr-2 cursor-pointer"><span className="material-symbols-outlined text-[18px]">download</span></AsyncButton>}
+                  <AsyncButton onClick={() => handleDelete(d.id)} className="text-slate-400 hover:text-red-500 cursor-pointer"><span className="material-symbols-outlined text-[18px]">delete</span></AsyncButton>
                 </td>
               </tr>
             ))}
@@ -544,17 +206,17 @@ function DokumenSection({ docs, loading, onRefresh }) {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowForm(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="p-5 border-b flex justify-between">
-              <h3 className="font-bold text-lg">Upload Dokumen</h3>
+              <h3 className="font-bold text-lg">{t("fin_doc_upload")}</h3>
               <button onClick={() => setShowForm(false)} className="text-slate-400 cursor-pointer"><span className="material-symbols-outlined">close</span></button>
             </div>
             <div className="p-5 space-y-4">
-              <div><label className="block text-sm font-medium mb-1">Nama *</label>
+              <div><label className="block text-sm font-medium mb-1">{t("fin_colName")} *</label>
                 <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
-              <div><label className="block text-sm font-medium mb-1">Kategori</label>
+              <div><label className="block text-sm font-medium mb-1">{t("fin_category")}</label>
                 <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm">
                   {CATS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select></div>
-              <div><label className="block text-sm font-medium mb-1">Periode</label>
-                <input value={form.period} onChange={e => setForm({ ...form, period: e.target.value })} placeholder="e.g. Q3 2026" className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
+              <div><label className="block text-sm font-medium mb-1">{t("fin_period")}</label>
+                <input value={form.period} onChange={e => setForm({ ...form, period: e.target.value })} placeholder={t("fin_doc_phPeriod")} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
               <div><label className="block text-sm font-medium mb-1">File</label>
                 {form.fileUrl
                   ? <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
@@ -564,15 +226,15 @@ function DokumenSection({ docs, loading, onRefresh }) {
                     </div>
                   : <label className="flex items-center justify-center gap-2 py-6 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer hover:border-primary">
                       <span className="material-symbols-outlined text-slate-400">cloud_upload</span>
-                      <span className="text-sm text-slate-500">Pilih file</span>
+                      <span className="text-sm text-slate-500">{t("fin_doc_pickFile")}</span>
                       <input type="file" onChange={handleUpload} className="hidden" accept=".pdf,.xlsx,.xls,.doc,.docx,.csv" />
                     </label>
                 }
               </div>
             </div>
             <div className="p-5 border-t flex justify-end gap-3">
-              <button onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg border text-sm cursor-pointer">Batal</button>
-              <button onClick={handleSave} disabled={!form.name} className="px-5 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 cursor-pointer">Upload</button>
+              <button onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg border text-sm cursor-pointer">{t("cancel")}</button>
+              <AsyncButton onClick={handleSave} disabled={!form.name} className="px-5 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 cursor-pointer">{t("fin_doc_uploadBtn")}</AsyncButton>
             </div>
           </div>
         </div>

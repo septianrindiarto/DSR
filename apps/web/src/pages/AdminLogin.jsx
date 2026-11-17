@@ -1,14 +1,32 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { api } from "../lib/api";
+import { isDriverOnly } from "../lib/permissions";
+
+const homeFor = (u) => (isDriverOnly(u) ? "/driver" : "/admin/dashboard");
 
 export default function AdminLogin() {
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  // "Pengguna online" (owner 2026-11-13): the account is logged in elsewhere.
+  // { code: USER_ONLINE | USER_ONLINE_KICKABLE, message, kickableAt, step: 'password' | '2fa' }
+  const [online, setOnline] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!online || online.code !== "USER_ONLINE") return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [online]);
+  const onlineOf = (err, step) => {
+    const code = err?.body?.code;
+    if (code !== "USER_ONLINE" && code !== "USER_ONLINE_KICKABLE") return false;
+    setOnline({ code, message: err.message, kickableAt: err.body?.kickableAt || null, step });
+    return true;
+  };
   const [loading, setLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
   const [name, setName] = useState("");
@@ -24,9 +42,13 @@ export default function AdminLogin() {
   const [customerType, setCustomerType] = useState("private");
   const [companyName, setCompanyName] = useState("");
   const [inviteCode, setInviteCode] = useState("");
-  const [agencyCode, setAgencyCode] = useState("");
+  // Two-step verification (shown after a correct password for 2FA users).
+  const [twoFactorStep, setTwoFactorStep] = useState(false);
+  const [tfCode, setTfCode] = useState("");
+  const [tfBackup, setTfBackup] = useState(false);
+  const [tfTrust, setTfTrust] = useState(false);
   const navigate = useNavigate();
-  const { login, register, logout, sessionExpired, clearSessionExpired } = useAuth();
+  const { login, verifyTwoFactor, register, logout, sessionExpired, sessionEnd, clearSessionExpired } = useAuth();
   const { t } = useLanguage();
 
   // Demo credentials — seeded by `npm run db:seed` in the API.
@@ -34,8 +56,9 @@ export default function AdminLogin() {
   const DEMO_EMAIL = "demo@dsrsolution.com";
   const DEMO_PASSWORD = "demo123";
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  // forceNext = true: take over the login that is idle ≥ 5 min on another device.
+  const handleSubmit = async (e, forceNext = false) => {
+    e?.preventDefault?.();
     setError("");
     setLoading(true);
 
@@ -53,7 +76,7 @@ export default function AdminLogin() {
           && !inviteCode.trim()
           && !companyName.trim()
         ) {
-          setError("Untuk tipe Perusahaan, isi Nama Perusahaan ATAU Kode Undangan");
+          setError("Untuk tipe Perusahaan, isi Nama Perusahaan ATAU Kode Perusahaan");
           setLoading(false); return;
         }
         await register({
@@ -64,7 +87,6 @@ export default function AdminLogin() {
           // with companyName (the backend enforces this too).
           inviteCode: inviteCode.trim() || null,
           // Stage 2 — optional agency code links the new client to that agency.
-          agencyCode: (!isAgency && agencyCode.trim()) ? agencyCode.trim() : null,
           // Agency mode is only used by DSR internal devs — sets role=admin.
           // Client mode → role=client (the default).
           accountType: isAgency ? "agency" : "client",
@@ -73,27 +95,14 @@ export default function AdminLogin() {
         // show the "cek inbox" panel and let the user click the link.
         setRegisteredEmail(email);
       } else {
-        const result = await login(email, password);
-        // Enforce that the chosen login mode matches the account type: an
-        // agency account must use the Agency menu and a client account the
-        // Client menu. Superadmin is internal and may use either.
-        const acct = result?.user?.accountType;
-        const role = result?.user?.role;
-        if (acct && role !== 'superadmin') {
-          const isAgencyAcct = acct === 'agency';
-          if (isAgency !== isAgencyAcct) {
-            await logout(); // discard the session we just created
-            setError(isAgency
-              ? "Akun ini bukan akun Agency. Silakan masuk melalui menu Client / Perorangan."
-              : "Akun ini adalah akun Agency. Silakan masuk melalui menu Agency / Perusahaan.");
-            setLoading(false);
-            return;
-          }
-        }
-        navigate("/admin/dashboard");
+        const result = await login(email, password, { force: forceNext });
+        if (result?.twoFactor) { setTwoFactorStep(true); setTfCode(""); return; }
+        setOnline(null);
+        if (!(await finishLogin(result?.user))) return;
+        navigate(homeFor(result?.user));
       }
     } catch (err) {
-      setError(err.message || "Login gagal. Periksa email dan password Anda.");
+      if (!onlineOf(err, "password")) setError(err.message || "Login gagal. Periksa email dan password Anda.");
     } finally {
       setLoading(false);
     }
@@ -111,6 +120,44 @@ export default function AdminLogin() {
       setError(err.message || "Gagal mengirim ulang.");
     } finally {
       setResending(false);
+    }
+  };
+
+  // Enforce that the chosen login mode matches the account type: an agency
+  // account must use the Agency menu and a client account the Client menu.
+  // Superadmin is internal and may use either. Returns false when rejected.
+  async function finishLogin(u) {
+    // The stored account_type can be stale; the server's effective type
+    // follows the organisation, so ask it (fallback: the session value).
+    let acct = u?.accountType;
+    try { const a = await api.users.myAccess(); if (a?.accountType) acct = a.accountType; } catch { /* keep session value */ }
+    const role = u?.role;
+    if (acct && role !== 'superadmin') {
+      const isAgencyAcct = acct === 'agency';
+      if (isAgency !== isAgencyAcct) {
+        await logout(); // discard the session we just created
+        setError(isAgency ? t('loginNotAgency') : t('loginIsAgency'));
+        setLoading(false);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  const handleTwoFactor = async (e, forceNext = false) => {
+    e?.preventDefault?.();
+    setError("");
+    setLoading(true);
+    try {
+      const { user: u } = await verifyTwoFactor(tfCode, { backup: tfBackup, trustDevice: tfTrust, force: forceNext });
+      setTwoFactorStep(false);
+      setOnline(null);
+      if (!(await finishLogin(u))) return;
+      navigate(homeFor(u));
+    } catch (err) {
+      if (!onlineOf(err, "2fa")) setError(err.message || t('tfInvalidCode'));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -295,8 +342,52 @@ export default function AdminLogin() {
             </div>
           )}
 
+          {/* Two-step verification */}
+          {twoFactorStep && !registeredEmail && (
+            <form className="px-8 pb-10 flex flex-col gap-4" onSubmit={handleTwoFactor}>
+              <div className="text-center">
+                <span className="material-symbols-outlined text-4xl text-primary">phonelink_lock</span>
+                <h3 className="text-lg font-bold text-slate-900 mt-1">{t('tfTitle')}</h3>
+                <p className="text-sm text-slate-600">{tfBackup ? t('tfEnterBackup') : t('tfEnterCode')}</p>
+              </div>
+              <input autoFocus inputMode={tfBackup ? "text" : "numeric"} autoComplete="one-time-code" maxLength={tfBackup ? 32 : 8}
+                value={tfCode} onChange={(e) => setTfCode(e.target.value)} placeholder={tfBackup ? "XXXXX-XXXXX" : "123456"}
+                className="w-full text-center tracking-[0.4em] text-xl font-mono px-4 py-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              {!tfBackup && (
+                <label className="inline-flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={tfTrust} onChange={(e) => setTfTrust(e.target.checked)} /> {t('tfTrustDevice')}
+                </label>
+              )}
+              {online && (() => {
+                const waitMs = online.code === "USER_ONLINE" && online.kickableAt ? new Date(online.kickableAt).getTime() - nowTick : 0;
+                const canKick = online.code === "USER_ONLINE_KICKABLE" || waitMs <= 0;
+                const mm = Math.max(0, Math.ceil(waitMs / 1000));
+                return (
+                  <div className="bg-sky-50 border border-sky-200 text-sky-900 text-sm px-4 py-3 rounded-lg space-y-2">
+                    <p className="font-semibold flex items-center gap-1.5"><span className="material-symbols-outlined text-[18px]">devices</span>{t('loginOnlineTitle')}</p>
+                    <p className="text-xs">{online.message}</p>
+                    {canKick ? (
+                      <button type="button" disabled={loading} onClick={() => (online.step === "2fa" ? handleTwoFactor(null, true) : handleSubmit(null, true))}
+                        className="w-full py-2 rounded-lg bg-sky-700 text-white text-sm font-semibold disabled:opacity-60 cursor-pointer">{t('loginOnlineKick')}</button>
+                    ) : (
+                      <p className="text-xs font-semibold">{t('loginOnlineWait', { t: `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}` })}</p>
+                    )}
+                  </div>
+                );
+              })()}
+              {error && <p className="text-xs text-red-600 text-center">{error}</p>}
+              <button type="submit" disabled={loading || !tfCode.trim()} className="w-full py-2.5 rounded-lg bg-primary text-white font-semibold disabled:opacity-60 cursor-pointer">
+                {loading ? t('loading') : t('tfVerify')}
+              </button>
+              <button type="button" onClick={() => { setTfBackup((b) => !b); setTfCode(""); setError(""); }} className="text-sm text-slate-500 hover:text-primary cursor-pointer">
+                {tfBackup ? t('tfUseApp') : t('tfUseBackup')}
+              </button>
+              <button type="button" onClick={() => { setTwoFactorStep(false); setTfCode(""); setError(""); }} className="text-xs text-slate-400 hover:text-slate-600 cursor-pointer">{t('back')}</button>
+            </form>
+          )}
+
           {/* Login Form */}
-          {!registeredEmail && (
+          {!registeredEmail && !twoFactorStep && (
           <form
             className="px-8 pb-10 flex flex-col gap-5"
             onSubmit={handleSubmit}
@@ -304,18 +395,38 @@ export default function AdminLogin() {
             {/* Audit M-05: session-expired banner. Fires when a 401 from
                 any API call escalated to AuthContext. Dismisses on any new
                 input the user gives (clearSessionExpired is called inline). */}
-            {sessionExpired && !error && (
+            {sessionExpired && !error && !online && (
               <div className="bg-amber-50 border border-amber-200 text-amber-700 text-sm px-4 py-3 rounded-lg flex items-start gap-2">
-                <span className="material-symbols-outlined text-[18px] mt-0.5">timer_off</span>
+                <span className="material-symbols-outlined text-[18px] mt-0.5">{sessionEnd?.code === "SESSION_KICKED" ? "devices" : "timer_off"}</span>
                 <div className="flex-1">
-                  <p className="font-semibold">Sesi Anda telah berakhir</p>
-                  <p className="text-xs mt-0.5">Silakan masuk kembali untuk melanjutkan.</p>
+                  <p className="font-semibold">{sessionEnd?.code === "SESSION_KICKED" ? t('sessKickedTitle') : t('sessExpiredTitle')}</p>
+                  <p className="text-xs mt-0.5">{sessionEnd?.code === "SESSION_KICKED"
+                    ? t('sessKickedText', { d: sessionEnd.device || t('sessOtherDevice') })
+                    : sessionEnd?.code === "SESSION_EXPIRED" ? t('sessIdleText') : "Silakan masuk kembali untuk melanjutkan."}</p>
                 </div>
                 <button type="button" onClick={clearSessionExpired} className="text-amber-500 hover:text-amber-700">
                   <span className="material-symbols-outlined text-[18px]">close</span>
                 </button>
               </div>
             )}
+
+            {online && (() => {
+              const waitMs = online.code === "USER_ONLINE" && online.kickableAt ? new Date(online.kickableAt).getTime() - nowTick : 0;
+              const canKick = online.code === "USER_ONLINE_KICKABLE" || waitMs <= 0;
+              const mm = Math.max(0, Math.ceil(waitMs / 1000));
+              return (
+                <div className="bg-sky-50 border border-sky-200 text-sky-900 text-sm px-4 py-3 rounded-lg space-y-2">
+                  <p className="font-semibold flex items-center gap-1.5"><span className="material-symbols-outlined text-[18px]">devices</span>{t('loginOnlineTitle')}</p>
+                  <p className="text-xs">{online.message}</p>
+                  {canKick ? (
+                    <button type="button" disabled={loading} onClick={() => (online.step === "2fa" ? handleTwoFactor(null, true) : handleSubmit(null, true))}
+                      className="w-full py-2 rounded-lg bg-sky-700 text-white text-sm font-semibold disabled:opacity-60 cursor-pointer">{t('loginOnlineKick')}</button>
+                  ) : (
+                    <p className="text-xs font-semibold">{t('loginOnlineWait', { t: `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}` })}</p>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Error Alert */}
             {error && (
@@ -401,35 +512,10 @@ export default function AdminLogin() {
               </div>
             )}
 
-            {/* Agency Code (CLIENT register, private & company) — links the
-                new client to that agency. */}
-            {isRegister && !isAgency && (
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-slate-700" htmlFor="agencyCode">
-                  Kode Agency <span className="text-slate-400 text-xs font-normal">(opsional)</span>
-                </label>
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-primary transition-colors">
-                    <span className="material-symbols-outlined text-[20px]">handshake</span>
-                  </div>
-                  <input
-                    className="block w-full rounded-lg border border-slate-200 bg-slate-50 text-slate-900 pl-10 pr-4 py-3 text-sm focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-slate-400 transition-all outline-none uppercase tracking-wider font-mono"
-                    id="agencyCode"
-                    placeholder="ABCD2345"
-                    type="text"
-                    value={agencyCode}
-                    onChange={(e) => setAgencyCode(e.target.value.toUpperCase())}
-                    maxLength={20}
-                    autoComplete="off"
-                  />
-                </div>
-                <p className="text-xs text-slate-500 leading-relaxed">Tautkan akun Anda ke agency tertentu (jika diberi kode oleh agency).</p>
-              </div>
-            )}
-
-            {/* Invite Code (Client register, type=company) — joins an
-                existing org. When filled, the Nama Perusahaan field below
-                is suppressed (mutually exclusive). */}
+            {/* Kode Perusahaan (owner 2026-11-05: the only code at sign-up) —
+                joins an existing company; the account then inherits every
+                partner agency of that company (links are per company). A new
+                company adds partner agencies later in Pengaturan → Mitra. */}
             {isRegister && !isAgency && customerType === 'company' && (
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-slate-700" htmlFor="inviteCode">
@@ -491,7 +577,7 @@ export default function AdminLogin() {
                   placeholder={isAgency ? 'admin@company.com' : 'admin@dsrsolution.com'}
                   type="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); setOnline(null); }}
                   required
                 />
               </div>
@@ -519,7 +605,7 @@ export default function AdminLogin() {
                   placeholder="••••••••"
                   type={showPassword ? "text" : "password"}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); setOnline(null); }}
                   required
                   minLength={6}
                 />

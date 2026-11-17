@@ -17,6 +17,7 @@ export const customerService = {
             organizationId: customers.organizationId,
             isDemo: customers.isDemo,
             createdBy: customers.createdBy,
+            customerId: customers.id,
         });
         conditions.push(...scopeConds);
 
@@ -178,6 +179,7 @@ export const customerService = {
             organizationId: customers.organizationId,
             isDemo: customers.isDemo,
             createdBy: customers.createdBy,
+            customerId: customers.id,
         });
 
         const [total, active, vip, inactive, priv, company] = await Promise.all([

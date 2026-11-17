@@ -9,10 +9,11 @@
 import { Router } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { notifyAdmin, isTelegramConfigured } from '../services/telegram.service.js';
+import { requirePerm } from '../middleware/permission.js';
 
 const router = Router();
 
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requirePerm('settings', 'edit'));
 
 router.get('/telegram/status', (req, res) => {
     const configured = isTelegramConfigured();

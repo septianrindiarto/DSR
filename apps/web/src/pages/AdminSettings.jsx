@@ -1,12 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../context/AuthContext";
-import { api, apiCache, swr } from "../lib/api";
+import { api, apiCache } from "../lib/api";
 import InviteCodeCard from "../components/InviteCodeCard";
 import RelationshipManager from "../components/RelationshipManager";
 import { useToast } from "../components/Toast";
+import { can } from "../lib/permissions";
+import AgencyProfileCard from "../components/AgencyProfileCard";
 
+import AsyncButton from "../components/AsyncButton";
+const TaxSettings = lazy(() => import("../components/settings/TaxSettings"));
+const OpsDefaultSettings = lazy(() => import("../components/settings/OpsDefaultSettings"));
 // ─── Defaults — used only for users with NO organizationId (legacy agency
 // users without an org assignment). Client/agency users WITH an org load from
 // the /api/orgs/my-info endpoint and these defaults are never seen.
@@ -56,19 +61,23 @@ function saveObj(key, value) {
 }
 
 const ALL_SECTIONS = [
-  { id: "profile",       label: "Profil",                 icon: "person" },
-  { id: "company",       label: "Informasi Perusahaan",   icon: "business" },
-  { id: "relationships", label: "Mitra",                  icon: "handshake" },
-  { id: "numbering",     label: "Penomoran Dokumen",      icon: "tag" },
-  { id: "terms",         label: "Termin Pembayaran",      icon: "event_available" },
-  { id: "sync",          label: "Sinkronisasi Data",      icon: "cloud_sync" },
-  { id: "notifications", label: "Notifikasi",             icon: "notifications" },
-  { id: "prefs",         label: "Preferensi",             icon: "tune" },
+  { id: "profile",       labelKey: "setProfile",                 icon: "person" },
+  { id: "security",      labelKey: "setSecurity",                icon: "shield_lock" },
+  { id: "company",       labelKey: "setCompanyInfo",   icon: "business" },
+  { id: "relationships", labelKey: "setPartners",                  icon: "handshake" },
+  { id: "numbering",     labelKey: "setNumbering",      icon: "tag" },
+  { id: "terms",         labelKey: "paymentTerms",      icon: "event_available" },
+  { id: "tax",           labelKey: "tx_sectionTitle",   icon: "percent" },
+  { id: "opsDefault",    labelKey: "tx_opsTitle",       icon: "more_time" },
+  { id: "legal",         labelKey: "setLegal",          icon: "verified_user" },
+  { id: "agencyProfile", labelKey: "ap_title",          icon: "storefront" },
+  { id: "notifications", labelKey: "setNotifications",             icon: "notifications" },
+  { id: "prefs",         labelKey: "setPrefs",             icon: "tune" },
 ];
 
 // Phase 4A-driven section visibility:
 //   • Agency (any role)          → all 5 sections
-//   • Client + has organization  → no Penomoran, no Sinkronisasi (those are
+//   • Client + has organization  → no Penomoran / Termin (those are
 //                                   agency-only invoicing/data ops)
 //   • Client + no organization   → also no Informasi Perusahaan
 function getVisibleSections(user) {
@@ -77,13 +86,16 @@ function getVisibleSections(user) {
   const hasOrg = !!user?.organizationId;
 
   if (accountType === 'agency') {
-    // Payment terms are invoice config → agency admins / superadmin only.
-    const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
-    return isAdmin ? ALL_SECTIONS : ALL_SECTIONS.filter(s => s.id !== 'terms');
+    // RBAC v2: section visibility follows permissions. Payment terms,
+    // numbering and notifications need settings.edit.
+    const editSettings = can(user, 'settings', 'edit');
+    const hide = new Set(editSettings ? [] : ['terms', 'notifications', 'numbering', 'tax', 'opsDefault']);
+    if (user?.role === 'superadmin' && !user?.organizationId) { hide.add('legal'); hide.add('agencyProfile'); }
+    return ALL_SECTIONS.filter(s => !hide.has(s.id));
   }
 
   // Client side
-  const allowed = new Set(['profile', 'prefs']);
+  const allowed = new Set(['profile', 'security', 'prefs']);
   if (hasOrg) { allowed.add('company'); allowed.add('relationships'); }
   return ALL_SECTIONS.filter(s => allowed.has(s.id));
 }
@@ -92,7 +104,8 @@ export default function AdminSettings() {
   const { t, lang, toggleLanguage } = useLanguage();
   const toast = useToast();
   const { user, logout } = useAuth();
-  const [activeSection, setActiveSection] = useState("profile");
+  // ?section=legal deep-links from the setup-mode banner.
+  const [activeSection, setActiveSection] = useState(() => new URLSearchParams(window.location.search).get("section") || "profile");
   const SECTIONS = getVisibleSections(user);
   // If activeSection was hidden for this user (e.g. they used to be agency
   // but logged out as a private client), bounce back to profile.
@@ -126,14 +139,6 @@ export default function AdminSettings() {
       })
       .catch((err) => console.error("Failed to load company info:", err));
   }, [user?.organizationId]);
-
-  // Sync status (re-uses the existing /api/sync/status endpoint)
-  const [syncStatus, setSyncStatus] = useState(() => apiCache.get("sync:status") || null);
-  const [syncing, setSyncing] = useState(false);
-  useEffect(() => {
-    swr("sync:status", () => api.sync.status(), (s) => setSyncStatus(s))
-      .catch(err => console.error("sync status:", err));
-  }, []);
 
   async function saveCompany() {
     // If the user has an org → write to DB (Phase 4B).
@@ -185,31 +190,12 @@ export default function AdminSettings() {
     toast.success("Preferensi disimpan.");
   }
 
-  async function triggerSync() {
-    if (syncing) return;
-    setSyncing(true);
-    try {
-      const { ok, summary } = await api.sync.runRekap();
-      const msg = ok
-        ? `Sync ${summary.status}: orders +${summary.ordersInserted}/~${summary.ordersUpdated}, customers +${summary.customersInserted}, drivers +${summary.driversInserted}, cars +${summary.carsInserted}.`
-        : `Sync GAGAL — ${(summary.errors || []).slice(0, 3).map(e => e.message).join(" / ")}`;
-      toast[ok ? "success" : "error"](msg);
-      apiCache.invalidate("sync:");
-      const status = await api.sync.status();
-      setSyncStatus(status);
-    } catch (err) {
-      toast.error("Sync error: " + err.message);
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   return (
     <AdminLayout>
       {/* Page header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Pengaturan</h1>
-        <p className="text-slate-500 text-sm mt-1">Kelola profil, informasi perusahaan, penomoran dokumen, dan sinkronisasi data.</p>
+        <p className="text-slate-500 text-sm mt-1">Kelola profil, informasi perusahaan, penomoran dokumen, dan termin pembayaran.</p>
       </div>
 
       {/* Two-column layout: section nav + section content */}
@@ -228,7 +214,7 @@ export default function AdminSettings() {
                 }`}
               >
                 <span className="material-symbols-outlined text-[20px]">{s.icon}</span>
-                <span>{s.label}</span>
+                <span>{t(s.labelKey)}</span>
               </button>
             ))}
           </div>
@@ -237,6 +223,8 @@ export default function AdminSettings() {
         {/* Section content */}
         <section className="lg:col-span-9">
           {activeSection === "profile"   && <ProfileSection user={user} logout={logout} />}
+          {activeSection === "security"  && <SecuritySection />}
+          {activeSection === "agencyProfile" && <Card title={t("ap_title")} subtitle={t("ap_subtitle")}><AgencyProfileCard own /></Card>}
           {activeSection === "company"   && <CompanySection company={company} setCompany={setCompany} onSave={saveCompany} onReset={resetCompany} canEdit={
             // Editable when ANY of:
             //   - No org yet (legacy agency-no-org localStorage path)
@@ -252,7 +240,9 @@ export default function AdminSettings() {
           {activeSection === "relationships" && <RelationshipManager />}
           {activeSection === "numbering" && <NumberingSection numbering={numbering} setNumbering={setNumbering} onSave={saveNumbering} />}
           {activeSection === "terms"         && <PaymentTermsSection />}
-          {activeSection === "sync"          && <SyncSection syncStatus={syncStatus} syncing={syncing} onTrigger={triggerSync} />}
+          {activeSection === "tax"           && <Suspense fallback={null}><TaxSettings /></Suspense>}
+          {activeSection === "opsDefault"    && <Suspense fallback={null}><OpsDefaultSettings /></Suspense>}
+          {activeSection === "legal"         && <LegalDocsSection />}
           {activeSection === "notifications" && <NotificationsSection />}
           {activeSection === "prefs"         && <PrefsSection prefs={prefs} setPrefs={setPrefs} onSave={savePrefs} lang={lang} toggleLanguage={toggleLanguage} t={t} />}
         </section>
@@ -320,6 +310,131 @@ function TextArea({ label, value, onChange, rows = 2, hint = "", disabled = fals
         className={cls}
       />
       {hint && <p className="text-xs text-slate-400 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+// ─── Keamanan Akun — password + optional two-step verification (TOTP) ───────
+function SecuritySection() {
+  const { t } = useLanguage();
+  const toast = useToast();
+  const { user, checkSession } = useAuth();
+  const enabled = !!user?.twoFactorEnabled;
+  const [pw, setPw] = useState("");
+  const [setup, setSetup] = useState(null);       // { secret, uri, backupCodes }
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
+  const inp = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm";
+
+  async function start() {
+    if (!pw) { toast.error(t("secNeedPassword")); return; }
+    setBusy(true);
+    try {
+      const r = await api.auth.twoFactor.enable(pw);
+      const secret = new URL(r.totpURI.replace(/^otpauth:/, "http:")).searchParams.get("secret") || "";
+      setSetup({ secret, uri: r.totpURI, backupCodes: r.backupCodes || [] });
+      setPw("");
+    } catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  }
+  async function confirmCode() {
+    setBusy(true);
+    try {
+      await api.auth.twoFactor.verifyTotp(code.replace(/\s+/g, ""));
+      toast.success(t("sec2faEnabled"));
+      setSetup(null); setCode("");
+      await checkSession();
+    } catch (e) { toast.error(e.message || t("tfInvalidCode")); } finally { setBusy(false); }
+  }
+  async function disable() {
+    if (!pw) { toast.error(t("secNeedPassword")); return; }
+    if (!confirm(t("sec2faDisableConfirm"))) return;
+    setBusy(true);
+    try { await api.auth.twoFactor.disable(pw); setPw(""); toast.success(t("sec2faDisabled")); await checkSession(); }
+    catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  }
+  async function downloadMyData() {
+    setBusy(true);
+    try {
+      const data = await api.me.exportData();
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = `data-saya-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  }
+  async function changePassword(e) {
+    e.preventDefault();
+    if (pwForm.next.length < 8) { toast.error(t("secPwMin")); return; }
+    if (pwForm.next !== pwForm.confirm) { toast.error(t("secPwMismatch")); return; }
+    setBusy(true);
+    try { await api.auth.changePassword(pwForm.current, pwForm.next); setPwForm({ current: "", next: "", confirm: "" }); toast.success(t("secPwChanged")); }
+    catch (e2) { toast.error(e2.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card title={t("sec2faTitle")} subtitle={t("sec2faSubtitle")}>
+        <div className={`mb-4 rounded-lg border px-3 py-2 text-sm ${enabled ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+          {enabled ? t("sec2faOn") : t("sec2faOff")}
+        </div>
+        {!setup && (
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="block flex-1 min-w-[220px]"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("secCurrentPassword")}</span>
+              <input type="password" className={inp} value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></label>
+            {enabled
+              ? <button onClick={disable} disabled={busy} className="px-4 py-2 rounded-lg border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 disabled:opacity-50 cursor-pointer">{t("sec2faDisable")}</button>
+              : <button onClick={start} disabled={busy} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 cursor-pointer">{t("sec2faEnable")}</button>}
+          </div>
+        )}
+        {setup && (
+          <div className="space-y-4">
+            <ol className="list-decimal pl-5 text-sm text-slate-700 space-y-1">
+              <li>{t("sec2faStep1")}</li>
+              <li>{t("sec2faStep2")}</li>
+              <li>{t("sec2faStep3")}</li>
+            </ol>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs text-slate-500 mb-1">{t("sec2faKey")}</p>
+              <p className="font-mono text-base tracking-wider break-all select-all">{setup.secret.replace(/(.{4})/g, "$1 ").trim()}</p>
+              <a href={setup.uri} className="text-xs text-blue-600 hover:underline">{t("sec2faOpenApp")}</a>
+            </div>
+            {setup.backupCodes.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-800 mb-2">{t("sec2faBackupCodes")}</p>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1 font-mono text-xs select-all">{setup.backupCodes.map((c) => <span key={c}>{c}</span>)}</div>
+              </div>
+            )}
+            <div className="flex items-end gap-2 flex-wrap">
+              <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("tfEnterCode")}</span>
+                <input inputMode="numeric" maxLength={8} className={`${inp} w-40 font-mono tracking-widest`} value={code} onChange={(e) => setCode(e.target.value)} placeholder="123456" /></label>
+              <button onClick={confirmCode} disabled={busy || !code.trim()} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 cursor-pointer">{t("tfVerify")}</button>
+              <button onClick={() => { setSetup(null); setCode(""); }} className="px-4 py-2 rounded-lg border text-sm cursor-pointer">{t("cancel")}</button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card title={t("secDataTitle")} subtitle={t("secDataSubtitle")}>
+        <button onClick={downloadMyData} disabled={busy} className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium hover:bg-slate-50 disabled:opacity-50 cursor-pointer inline-flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">download</span>{t("secDataDownload")}
+        </button>
+      </Card>
+
+      <Card title={t("secPwTitle")} subtitle={t("secPwSubtitle")}>
+        <form onSubmit={changePassword} className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("secCurrentPassword")}</span>
+            <input type="password" className={inp} value={pwForm.current} onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })} autoComplete="current-password" /></label>
+          <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("secNewPassword")}</span>
+            <input type="password" className={inp} value={pwForm.next} onChange={(e) => setPwForm({ ...pwForm, next: e.target.value })} autoComplete="new-password" /></label>
+          <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">{t("secConfirmPassword")}</span>
+            <input type="password" className={inp} value={pwForm.confirm} onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })} autoComplete="new-password" /></label>
+          <div className="md:col-span-3 flex justify-end">
+            <button type="submit" disabled={busy || !pwForm.current || !pwForm.next} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium disabled:opacity-50 cursor-pointer">{t("secPwChange")}</button>
+          </div>
+        </form>
+      </Card>
     </div>
   );
 }
@@ -497,7 +612,7 @@ function CompanySection({ company, setCompany, onSave, onReset, canEdit = true }
       footer={
         <>
           <button onClick={onReset} disabled={!canEdit} className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">Reset</button>
-          <button onClick={onSave} disabled={!canEdit} className="px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">Simpan</button>
+          <AsyncButton onClick={onSave} disabled={!canEdit} className="px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">Simpan</AsyncButton>
         </>
       }
     >
@@ -522,7 +637,7 @@ function NumberingSection({ numbering, setNumbering, onSave }) {
     <Card
       title="Penomoran Dokumen"
       subtitle="Awalan otomatis untuk No. Invoice, No. Surat, dll. yang muncul di halaman Dokumen."
-      footer={<button onClick={onSave} className="px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">Simpan</button>}
+      footer={<AsyncButton onClick={onSave} className="px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">Simpan</AsyncButton>}
     >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Awalan Tahun" value={numbering.yearPrefix} onChange={(v) => upd({ yearPrefix: v })} hint='2-digit tahun, mis. "26" untuk 2026' />
@@ -537,7 +652,77 @@ function NumberingSection({ numbering, setNumbering, onSave }) {
   );
 }
 
-// ─── Termin Pembayaran (D.2) ─────────────────────────────────────────────────
+// ─── Dokumen Legal Agency (RBAC v2 onboarding) ──────────────────────────────
+// NIB, Akta/SK Kemenkumham, NPWP Badan, KTP Penanggung Jawab + phone. When all
+// are present the agency leaves "setup" mode automatically. Files are private
+// (opened through an authenticated request, never a public link).
+const LEGAL_DOC_LABEL = {
+  nib: "NIB (Nomor Induk Berusaha)", akta: "Akta Pendirian / SK Kemenkumham",
+  npwp: "NPWP Badan", ktp: "KTP Penanggung Jawab",
+};
+const LEGAL_MISSING_LABEL = { nibNumber: "No. NIB", npwpNumber: "No. NPWP", phone: "No. telepon" };
+function LegalDocsSection() {
+  const toast = useToast();
+  const { user, refreshAccess } = useAuth();
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState({ nib: "", npwp: "", phone: "" });
+  const [busy, setBusy] = useState(null);
+  const canEditLegal = can(user, "settings", "edit");
+  const apply = (d) => { setData(d); setForm({ nib: d.nib, npwp: d.npwp, phone: d.phone }); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { api.legal.get().then(apply).catch((e) => toast.error(e.message)); }, []);
+  async function saveNumbers() {
+    setBusy("numbers");
+    try { const d = await api.legal.update(form); apply(d); toast.success("Tersimpan."); if (d.legalStatus === "active") refreshAccess?.(); }
+    catch (e) { toast.error(e.message); } finally { setBusy(null); }
+  }
+  async function upload(doc, file) {
+    if (!file) return;
+    setBusy(doc);
+    try { const d = await api.legal.upload(doc, file); apply(d); toast.success("Dokumen diunggah."); if (d.legalStatus === "active") refreshAccess?.(); }
+    catch (e) { toast.error(e.message); } finally { setBusy(null); }
+  }
+  if (!data) return <Card title="Dokumen Legal"><p className="text-sm text-slate-500">Memuat…</p></Card>;
+  const inp = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm disabled:bg-slate-100";
+  return (
+    <Card title="Dokumen Legal Agency"
+      subtitle="Wajib untuk menerima & mengklaim order dan tampil ke klien. Status aktif otomatis setelah semua lengkap — tanpa persetujuan superadmin.">
+      <div className={`mb-4 rounded-lg border px-3 py-2 text-sm ${data.legalStatus === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+        {data.legalStatus === "active"
+          ? (data.complete ? "✓ Agency aktif, dokumen lengkap." : "✓ Agency aktif (terdaftar sebelum verifikasi dokumen). Tetap disarankan melengkapi dokumen.")
+          : `Mode persiapan — belum lengkap: ${data.missing.map((m) => LEGAL_MISSING_LABEL[m] || LEGAL_DOC_LABEL[m]).join(", ")}.`}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">No. NIB *</span><input className={inp} disabled={!canEditLegal} value={form.nib} onChange={(e) => setForm({ ...form, nib: e.target.value })} /></label>
+        <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">No. NPWP Badan *</span><input className={inp} disabled={!canEditLegal} value={form.npwp} onChange={(e) => setForm({ ...form, npwp: e.target.value })} /></label>
+        <label className="block"><span className="block text-xs font-semibold text-slate-600 mb-1">No. telepon perusahaan *</span><input className={inp} disabled={!canEditLegal} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></label>
+      </div>
+      {canEditLegal && <div className="flex justify-end mb-5"><button onClick={saveNumbers} disabled={busy === "numbers"} className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer">Simpan nomor</button></div>}
+      <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+        {Object.entries(LEGAL_DOC_LABEL).map(([k, label]) => {
+          const d = data.documents[k];
+          return (
+            <div key={k} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm flex-wrap">
+              <span className="font-medium text-slate-700">{label} *</span>
+              <span className="flex items-center gap-3 text-xs">
+                {d ? <AsyncButton type="button" onClick={() => api.legal.openFile(k).catch((e) => toast.error(e.message))} className="text-blue-600 hover:underline cursor-pointer">✓ {d.originalName || "Lihat"}</AsyncButton> : <span className="text-slate-400">Belum diunggah</span>}
+                {canEditLegal && (
+                  <label className="px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50">
+                    {busy === k ? "Mengunggah…" : d ? "Ganti" : "Unggah"}
+                    <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={(e) => { upload(k, e.target.files?.[0]); e.target.value = ""; }} />
+                  </label>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">PDF/JPG/PNG maks 10 MB. Dokumen disimpan privat dan hanya dapat dibuka anggota agency Anda.</p>
+    </Card>
+  );
+}
+
+// ─── Konfigurasi Jadwal Jatuh Tempo Tagihan (D.2) ─────────────────────────────────────────────────
 // Default term (agency) + per-client term (company directory). Changing a
 // client's term never rewrites sent invoices; the affected ones are listed
 // with a "Batalkan & Buat Ulang" action instead.
@@ -599,7 +784,7 @@ function PaymentTermsSection() {
   const list = (data?.companies || []).filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <Card title={t("paymentTerms")} subtitle={t("paymentTermsDesc")}>
+    <Card title={t("Konfigurasi Termin Pembayaran")} subtitle={t("Pengaturan termin untuk menghitung waktu jatuh tempo pembayaran setelah tagihan dikirimkan")}>
       {!data ? <p className="text-sm text-slate-500">{t("loadingShort")}</p> : (
         <div className="space-y-5">
           <div className="flex items-end gap-3 flex-wrap">
@@ -661,72 +846,6 @@ function PaymentTermsSection() {
   );
 }
 
-function SyncSection({ syncStatus, syncing, onTrigger }) {
-  const fmtDate = (d) => d ? new Date(d).toLocaleString("id-ID") : "-";
-  const last = syncStatus?.lastSync;
-  return (
-    <Card
-      title="Sinkronisasi Data Rekap"
-      subtitle="Mengelola sinkronisasi otomatis antara Rekap 2026.xlsx (Google Drive) dengan database web app."
-      footer={
-        <button
-          onClick={onTrigger}
-          disabled={syncing}
-          className="flex items-center gap-2 px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {syncing
-            ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            :
-            <span className="material-symbols-outlined text-[18px]">cloud_sync</span>}
-          {syncing ? "Sinkronisasi..." : "Sinkronisasi Sekarang"}
-        </button>
-      }
-    >
-      {!syncStatus && <p className="text-sm text-slate-500">Memuat status…</p>}
-      {syncStatus && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          <Stat label="File Rekap.xlsx">
-            <div className="flex items-center gap-2">
-              <span className={`inline-block w-2 h-2 rounded-full ${syncStatus.file?.exists ? "bg-emerald-500" : "bg-amber-500"}`} />
-              <span className="font-medium text-slate-700 break-all">
-                {syncStatus.file?.exists
-                  ? `${(syncStatus.file.size / 1024).toFixed(0)} KB`
-                  : "tidak ditemukan di lokal"}
-              </span>
-            </div>
-            {syncStatus.file?.path && <p className="text-xs text-slate-400 mt-1 truncate" title={syncStatus.file.path}>{syncStatus.file.path}</p>}
-          </Stat>
-          <Stat label="File Diperbarui">
-            <span className="font-medium text-slate-700">{fmtDate(syncStatus.file?.mtime)}</span>
-          </Stat>
-          <Stat label="Sync Terakhir">
-            {last ? (
-              <div>
-                <span className="font-medium text-slate-700">{fmtDate(last.createdAt)}</span>
-                {" "}<span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                  last.status === "success" ? "bg-emerald-100 text-emerald-700" :
-                  last.status === "partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
-                }`}>{last.status}</span>
-                <p className="text-xs text-slate-400 mt-1">
-                  +{last.ordersInserted ?? 0} order, +{last.customersInserted ?? 0} pelanggan, +{last.driversInserted ?? 0} driver — {last.durationMs ?? 0}ms
-                </p>
-              </div>
-            ) : <span className="text-slate-400">Belum pernah</span>}
-          </Stat>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function Stat({ label, children }) {
-  return (
-    <div>
-      <p className="text-[10px] uppercase font-medium text-slate-400 tracking-wide mb-1">{label}</p>
-      <div>{children}</div>
-    </div>
-  );
-}
 
 function PrefsSection({ prefs, setPrefs, onSave, lang, toggleLanguage }) {
   const upd = (patch) => setPrefs({ ...prefs, ...patch });
@@ -735,10 +854,10 @@ function PrefsSection({ prefs, setPrefs, onSave, lang, toggleLanguage }) {
       title="Preferensi"
       subtitle="Pengaturan tampilan dan perilaku default."
       footer={
-        <button onClick={onSave} className="flex items-center gap-2 px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">
+        <AsyncButton onClick={onSave} className="flex items-center gap-2 px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:opacity-90 cursor-pointer">
           <span className="material-symbols-outlined text-[18px]">save</span>
           Simpan
-        </button>
+        </AsyncButton>
       }
     >
       <div>

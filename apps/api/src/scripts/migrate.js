@@ -41,13 +41,33 @@ function listSqlFiles() {
   return sqls.map(f => path.join(DRIZZLE_DIR, f));
 }
 
-// Strip line-comments and split on `;` at end of line. Each chunk is one statement.
+// Strip line-comments and split into statements on `;` — but never inside a
+// dollar-quoted body ($$ … $$, e.g. DO blocks / functions), whose inner `;`
+// belong to the block. (The old line-based split broke DO blocks into pieces
+// that all failed.)
 function splitStatements(text) {
   const cleaned = text
     .split('\n')
     .map(l => l.replace(/^--.*$/, '').replace(/\s+--.*$/, ''))
     .join('\n');
-  return cleaned.split(/;\s*$/m).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  let cur = '', inDollar = null, inQuote = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (!inQuote) {
+      const m = cleaned.slice(i).match(/^\$[A-Za-z_]*\$/);
+      if (m) {
+        if (!inDollar) inDollar = m[0];
+        else if (m[0] === inDollar) inDollar = null;
+        cur += m[0]; i += m[0].length - 1; continue;
+      }
+    }
+    if (!inDollar && ch === "'") inQuote = !inQuote;
+    if (!inDollar && !inQuote && ch === ';') { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }
 
 (async () => {

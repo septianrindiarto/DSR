@@ -1,10 +1,16 @@
+import { useLocation } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
+
+// Pages that already have their own WhatsApp entry point (the garage scene phone).
+const HIDE_ON = new Set(["/v2"]);
 
 // Public WhatsApp floating action button. Audit M-01: now flows through t().
 // TODO H-02: pull the phone number from settings instead of hardcoding.
 
 export default function WhatsAppFAB() {
   const { t } = useLanguage();
+  const { pathname } = useLocation();
+  if (HIDE_ON.has(pathname)) return null;
   return (
     <a
       href="https://wa.me/6282219812530"

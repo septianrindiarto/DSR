@@ -1,6 +1,7 @@
 import { db } from '../db/index.js';
 import { drivers } from '../db/schema.js';
 import { eq, ilike, or, asc, desc, sql, and, inArray } from 'drizzle-orm';
+import { encryptField, decryptFields } from './crypto.service.js';
 import { buildScopeConditions } from '../middleware/scope.js';
 
 const sortFields = {
@@ -8,8 +9,15 @@ const sortFields = {
     phone: drivers.phone,
     status: drivers.status,
     licenseExpiry: drivers.licenseExpiry,
+    joinDate: drivers.joinDate,
     createdAt: drivers.createdAt,
 };
+
+// SIM number (personal data) is stored AES-256-GCM encrypted.
+const SENSITIVE = ['licenseNumber'];
+const dec = (r) => decryptFields(r, SENSITIVE);
+const enc = (d) => (d && 'licenseNumber' in d ? { ...d, licenseNumber: encryptField(d.licenseNumber) } : d);
+export const decryptDriver = dec;
 
 export const driverService = {
     async findAll({ search, status, sortBy = 'createdAt', sortOrder = 'desc', page = 1, limit = 20, scopeUser = null }) {
@@ -42,12 +50,12 @@ export const driverService = {
         const results = await query.orderBy(orderDir).limit(limit).offset(offset);
         const countResult = await countQuery;
 
-        return { data: results, total: Number(countResult[0].count), page, limit };
+        return { data: dec(results), total: Number(countResult[0].count), page, limit };
     },
 
     async findById(id) {
         const result = await db.select().from(drivers).where(eq(drivers.id, id));
-        return result[0] || null;
+        return dec(result[0]) || null;
     },
 
     /** Case-insensitive exact lookup by name — used by CSV import / Rekap sync. */
@@ -56,21 +64,21 @@ export const driverService = {
         const result = await db.select().from(drivers)
             .where(sql`LOWER(${drivers.name}) = ${String(name).toLowerCase()}`)
             .limit(1);
-        return result[0] || null;
+        return dec(result[0]) || null;
     },
 
     async findAvailable() {
-        return db.select().from(drivers).where(eq(drivers.status, 'active'));
+        return dec(await db.select().from(drivers).where(eq(drivers.status, 'active')));
     },
 
     async create(data) {
-        const result = await db.insert(drivers).values(data).returning();
-        return result[0];
+        const result = await db.insert(drivers).values(enc(data)).returning();
+        return dec(result[0]);
     },
 
     async update(id, data) {
-        const result = await db.update(drivers).set({ ...data, updatedAt: new Date() }).where(eq(drivers.id, id)).returning();
-        return result[0];
+        const result = await db.update(drivers).set({ ...enc(data), updatedAt: new Date() }).where(eq(drivers.id, id)).returning();
+        return dec(result[0]);
     },
 
     // Bulk status change for several drivers at once. `status` must be a valid
@@ -83,7 +91,7 @@ export const driverService = {
             .set({ status, updatedAt: new Date() })
             .where(inArray(drivers.id, cleanIds))
             .returning();
-        return result;
+        return dec(result);
     },
 
     async delete(id) {
@@ -93,7 +101,7 @@ export const driverService = {
 
     async updateDocuments(id, docs) {
         const result = await db.update(drivers).set({ ...docs, updatedAt: new Date() }).where(eq(drivers.id, id)).returning();
-        return result[0];
+        return dec(result[0]);
     },
 
     async getStats(scopeUser = null) {

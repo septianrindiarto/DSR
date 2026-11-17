@@ -1,5 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { api } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
+import { can } from "../lib/permissions";
+import PriceEstimate from "./PriceEstimate";
 
 // LandingBookingForm v4 (Tier 2 multi-vehicle)
 // PUBLIC booking section on the landing page. Anonymous submission via
@@ -8,17 +11,7 @@ import { api } from "../lib/api";
 // optional package. Backend creates one shared order code (P### for
 // private, C### for company) and writes N rows linked by it.
 
-const CAR_CATEGORIES = [
-  { value: "MPV",      label: "MPV",      hint: "Contoh: Avanza, Xenia" },
-  { value: "SUV",      label: "SUV",      hint: "Contoh: Innova, Fortuner" },
-  { value: "City Car", label: "City Car", hint: "Contoh: Brio, Agya" },
-  { value: "LCV",      label: "LCV",      hint: "Contoh: Hiace, Elf" },
-  { value: "Pickup",   label: "Pickup",   hint: "Muatan kurang dari 1.5 Ton" },
-  { value: "CDE",      label: "CDE",      hint: "Engkel, 2 sampai 3 Ton" },
-  { value: "Lainnya",  label: "Lainnya",  hint: "Isi keterangan di kolom detail" },
-];
-
-const PACKAGE_OPTIONS = ["All In", "Mobil dan Driver", "Lepas Kunci"];
+import { CAR_CATEGORIES, PACKAGE_OPTIONS } from "../lib/booking-options";
 
 const emptyVehicle = () => ({
   carCategory: "",
@@ -46,6 +39,27 @@ export default function LandingBookingForm() {
   });
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+
+  // Company recommendations — only for a logged-in agency user / superadmin
+  // (same sources as the Dashboard form). Anonymous visitors never receive the
+  // client list; the field stays free text either way.
+  const { user } = useAuth();
+  const isAgencyUser = !!user && (user.role === "superadmin" || user.accountType === "agency") && can(user, "orders", "create");
+  const [companyOptions, setCompanyOptions] = useState([]);
+  useEffect(() => {
+    if (!isAgencyUser) return;
+    Promise.allSettled([
+      api.orders.companySuggestions(),
+      api.companies.list("limit=1000"),
+    ]).then(([hist, regs]) => {
+      const names = new Set();
+      const h = hist.status === "fulfilled" ? (hist.value?.data || hist.value || []) : [];
+      h.forEach((n) => n && names.add(String(n).trim()));
+      const r = regs.status === "fulfilled" ? (Array.isArray(regs.value) ? regs.value : (regs.value?.data || [])) : [];
+      r.forEach((c) => c?.name && names.add(String(c.name).trim()));
+      setCompanyOptions([...names].filter(Boolean).sort((a, b) => a.localeCompare(b)));
+    });
+  }, [isAgencyUser]);
 
   const totalDays = useMemo(() => {
     if (!form.pickupDate || !form.returnDate) return 1;
@@ -215,8 +229,15 @@ export default function LandingBookingForm() {
                 value={form.companyName}
                 onChange={e => set("companyName", e.target.value)}
                 className="light-input"
-                placeholder="Opsional"
+                placeholder={companyOptions.length ? "Ketik atau pilih perusahaan" : "Opsional"}
+                list={companyOptions.length ? "landing-company-suggestions" : undefined}
+                autoComplete="off"
               />
+              {companyOptions.length > 0 && (
+                <datalist id="landing-company-suggestions">
+                  {companyOptions.map((n) => <option key={n} value={n} />)}
+                </datalist>
+              )}
             </LField>
 
             <LField label="Total Hari" hint="Otomatis">
@@ -293,6 +314,9 @@ export default function LandingBookingForm() {
               />
             </LField>
           </div>
+
+          <PriceEstimate className="mt-5" pickupDate={form.pickupDate} returnDate={form.returnDate}
+            vehicles={(form.vehicles || []).map((v) => ({ category: v.carCategory, package: v.package, destination: v.destination, quantity: v.quantity }))} />
 
           {(info || error) && (
             <div className="mt-5">

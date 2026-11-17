@@ -43,10 +43,14 @@ export default function AdminClaimOrders() {
         orderNumber: head.orderNumber,
         customerName: head.customerName,
         customer: head.customer,
+        contactHidden: head.contactHidden,
         pickupDate: head.pickupDate,
         returnDate: head.returnDate,
         total: g.reduce((s, o) => s + Number(o.totalPrice || 0), 0),
         count: g.length,
+        // Claim SLA: minutes waiting (overdue after 60 min; reminders every 30 min).
+        ageMin: head.createdAt ? Math.round((Date.now() - new Date(head.createdAt)) / 60000) : null,
+        reminders: head.claimReminderCount || 0,
       };
     });
   }, [rows]);
@@ -189,10 +193,19 @@ export default function AdminClaimOrders() {
                       aria-label={`Pilih ${b.orderNumber}`}
                     />
                   </td>
-                  <td className="px-5 py-3 font-mono text-xs font-bold text-primary">{b.orderNumber}</td>
+                  <td className="px-5 py-3 font-mono text-xs font-bold text-primary">
+                    {b.orderNumber}
+                    {b.ageMin != null && (
+                      <span className={`ml-2 px-1.5 py-0.5 rounded font-sans text-[10px] font-bold ${b.ageMin >= 60 ? "bg-red-100 text-red-700" : b.ageMin >= 30 ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}
+                        title={t("claimRemindersSent", { n: b.reminders })}>
+                        {b.ageMin >= 60 ? t("claimOverdue") : t("claimWaitingMin", { n: b.ageMin })}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-5 py-3">
                     <p className="font-medium text-slate-800">{b.customerName || b.customer?.name || "-"}</p>
                     <p className="text-xs text-slate-400">{b.customer?.companyName || (b.customer?.customerType === "private" ? "Private" : "-")}</p>
+                    {b.contactHidden && <p className="text-[10px] text-slate-400 italic" title="Nomor & email pelanggan tampil setelah order diklaim">🔒 kontak tampil setelah diklaim</p>}
                   </td>
                   <td className="px-5 py-3 text-slate-600 text-xs whitespace-nowrap">
                     {formatDate(b.pickupDate)} – {formatDate(b.returnDate)}

@@ -5,3 +5,9 @@ node_modules/
 # production clone won't have any migrations to apply.
 uploads/*
 !uploads/.gitkeep
+
+# Private uploads (agency legal documents incl. KTP) — never commit, never serve statically
+uploads-private/
+
+# Backups written by src/scripts/purge-contract.js (contain client data) — never commit
+purge-backups/

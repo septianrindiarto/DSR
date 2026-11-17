@@ -19,6 +19,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { api, apiCache } from "../lib/api";
 import { useToast } from "./Toast";
+import OnlinePaymentBox from "./OnlinePaymentBox";
 import { formatDate } from "../lib/dataFormats";
 import { invoiceStatusOf, INVOICE_STATUS_CLASS, INVOICE_STATUS_KEY } from "../lib/invoiceStatus";
 
@@ -33,10 +34,21 @@ const daysBetween = (a, b) => {
 };
 const blank = (v) => v === undefined || v === null || String(v).trim() === "";
 
-export default function BookingEditModal({ rows, cars = [], drivers = [], onClose, onSaved, t }) {
+// Blank vehicle for create mode (and "+ Tambah Kendaraan").
+const today = () => new Date().toISOString().slice(0, 10);
+const blankItem = (key) => ({
+  orderId: null, key, label: "", car: null, driver: null, carId: "", driverId: "",
+  package: "", destination: "", pickupDate: today(), returnDate: today(), pickupLocation: "",
+  totalPrice: "", overnightNights: "0", overtimeHours: "0", bailout: "0", status: "pending", notes: "",
+});
+const MAX_VEHICLES = 10;
+
+// isNew → create mode ("Tambah Rekap"): same form, no invoice/cancel blocks,
+// vehicles can be added/removed, and the booking-level fields (dates, status)
+// follow Vehicle #1 because a new booking shares one date range + status.
+export default function BookingEditModal({ rows = [], isNew = false, cars = [], drivers = [], onClose, onSaved, t }) {
   const toast = useToast();
-  const isGroup = rows.length > 1;
-  const first = rows[0];
+  const first = rows[0] || {};
 
   // ─── Customer (booking-level) ─────────────────────────────────────────
   const [cust, setCust] = useState({
@@ -44,6 +56,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     customerType: first.customer?.customerType || "private",
     companyName: first.customer?.companyName || "",
     customerPhone: first.customer?.phone || first.customer?.whatsapp || "",
+    customerEmail: "",
   });
   const setC = (k, v) => setCust((p) => ({ ...p, [k]: v }));
 
@@ -61,8 +74,8 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
   }, []);
 
   // ─── Vehicles ─────────────────────────────────────────────────────────
-  const [items, setItems] = useState(() => rows.map((o) => ({
-    orderId: o.id,
+  const [items, setItems] = useState(() => isNew ? [blankItem(1)] : rows.map((o) => ({
+    orderId: o.id, key: o.id,
     label: o.car ? `${o.car.brand || ""} ${o.car.name || ""}`.trim() + (o.car.licensePlate ? ` (${o.car.licensePlate})` : "") : "",
     car: o.car, driver: o.driver,
     carId: o.carId ? String(o.carId) : "",
@@ -83,13 +96,24 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
   // Shared-field ticks: all OFF by default so every vehicle keeps (and can
   // edit) its own value. Ticking a field copies Vehicle #1's value to all.
   const [synced, setSynced] = useState(() => new Set());
+  const isGroup = items.length > 1;
+  // Create mode: dates + status are booking-level → always follow Vehicle #1.
+  const FORCED = useMemo(() => new Set(isNew ? ["pickupDate", "returnDate", "status"] : []), [isNew]);
+  const isSynced = (f) => FORCED.has(f) || synced.has(f);
+  const [nextKey, setNextKey] = useState(2);
+  const addVehicle = () => {
+    if (items.length >= MAX_VEHICLES) return;
+    setItems((prev) => [...prev, blankItem(nextKey)]);
+    setNextKey((k) => k + 1);
+  };
+  const removeVehicle = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
   const toggleSync = (f) => setSynced((prev) => {
     const n = new Set(prev);
     if (n.has(f)) n.delete(f); else n.add(f);
     return n;
   });
   // Effective value: synced fields read from vehicle #1.
-  const val = (idx, f) => (idx > 0 && synced.has(f) ? items[0][f] : items[idx][f]);
+  const val = (idx, f) => (idx > 0 && isSynced(f) ? items[0][f] : items[idx][f]);
 
   const carPrice = (carId) => Number(cars.find((c) => String(c.id) === String(carId))?.price || 0);
   const setItem = (idx, f, v) => setItems((prev) => prev.map((it, i) => {
@@ -103,19 +127,52 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     return next;
   }));
 
+  // Pricing engine: fill Kontrak Harga from the agency's rate card
+  // (+ the client's corporate rate). Staff can still overwrite it.
+  const [pricingIdx, setPricingIdx] = useState(null);
+  async function priceFromRateCard(idx) {
+    const car = cars.find((c) => String(c.id) === String(val(idx, "carId")));
+    const requested = (String(val(idx, "notes") || "").match(/Permintaan Kendaraan:\s*([^\n(]+)/i) || [])[1]?.trim();
+    const category = car?.type || requested;
+    if (!category || !val(idx, "package")) { toast.error(t("prc_needCategoryPackage")); return; }
+    setPricingIdx(idx);
+    try {
+      const r = await api.pricing.quote({
+        items: [{
+          category, package: val(idx, "package"), destination: val(idx, "destination") || null,
+          carModel: car ? `${car.brand || ""} ${car.name || ""}`.trim() : null, carPrice: car?.price ?? null,
+          overtimeHours: Number(val(idx, "overtimeHours")) || 0, overnightNights: Number(val(idx, "overnightNights")) || 0,
+        }],
+        pickupDate: val(idx, "pickupDate"), returnDate: val(idx, "returnDate"),
+        clientOrgId: rows[0]?.organizationId || null,
+      });
+      const q = r?.quotes?.[0];
+      const it = q?.items?.[0];
+      if (!q || !(q.total > 0)) { toast.error(t("prc_noRateFound")); return; }
+      setItem(idx, "totalPrice", String(q.total));
+      toast.success(t("prc_rateApplied", { zone: it?.zone || "-", src: t(`prc_src_${it?.source}`) }));
+    } catch (e) { toast.error(e.message); }
+    finally { setPricingIdx(null); }
+  }
+
   const selectableCars = cars.filter((c) => c.status !== "maintenance");
   const selectableDrivers = drivers.filter((d) => !d.status || d.status === "active");
   const carOptionsFor = (it) => (it.car && !selectableCars.some((c) => c.id === it.car.id) ? [it.car, ...selectableCars] : selectableCars);
   const driverOptionsFor = (it) => (it.driver && !selectableDrivers.some((d) => d.id === it.driver.id) ? [it.driver, ...selectableDrivers] : selectableDrivers);
 
   // ─── Invoices (one block per distinct invoice on these rows) ──────────
-  const invoiceIds = useMemo(() => [...new Set(rows.map((r) => r.invoiceId).filter(Boolean))], [rows]);
+  const invoiceIds = useMemo(() => (isNew ? [] : [...new Set(rows.map((r) => r.invoiceId).filter(Boolean))]), [rows, isNew]);
   const [invoices, setInvoices] = useState({});      // id → invoice
-  const [invForms, setInvForms] = useState({});      // id → { sentDate, paidDate }
+  const [invForms, setInvForms] = useState({});      // id → { sentDate, paidDate } (both manual)
+  const [payForms, setPayForms] = useState({});      // id → { paidDate, amount, isFinal }
+  const [payBusy, setPayBusy] = useState(null);
+  // Kas/Bank that receives a payment (Books auto-posting: Dr Kas/Bank, Cr Piutang).
+  const [cashAccts, setCashAccts] = useState({ accounts: [], defaultId: null });
   const [invLoading, setInvLoading] = useState(invoiceIds.length > 0);
   const [reissuingId, setReissuingId] = useState(null);
   useEffect(() => {
     if (!invoiceIds.length) return;
+    api.invoices.cashAccounts().then((r) => setCashAccts(r || { accounts: [], defaultId: null })).catch(() => {});
     Promise.allSettled(invoiceIds.map((id) => api.invoices.get(id))).then((res) => {
       const map = {}, forms = {};
       res.forEach((r) => {
@@ -137,7 +194,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     const due = sent && inv.paymentTermDays != null
       ? new Date(new Date(sent).getTime() + inv.paymentTermDays * 86400000).toISOString()
       : (sent ? inv.dueDate : null);
-    return { due, status: invoiceStatusOf({ sentDate: sent, dueDate: due, paidDate: f.paidDate || null, status: val(0, "status") }) };
+    return { due, status: invoiceStatusOf({ sentDate: sent, dueDate: due, paidDate: f.paidDate || null, paidAmount: inv.paidAmount, status: val(0, "status") }) };
   };
   async function reissue(inv) {
     if (!confirm(t("invReissueConfirm"))) return;
@@ -151,6 +208,37 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     } catch (e) { toast.error(e.message); }
     finally { setReissuingId(null); }
   }
+  // Payments are recorded immediately (not on Simpan) — each one is a fact.
+  // Payment fields start EMPTY — date and amount are always typed by the user.
+  const payForm = (inv) => payForms[inv.id] || { paidDate: "", amount: "" };
+  const setPayForm = (inv, patch) => setPayForms((m) => ({ ...m, [inv.id]: { ...payForm(inv), ...patch } }));
+  const applyInvoice = (fresh) => {
+    setInvoices((m) => ({ ...m, [fresh.id]: fresh }));
+    setPayForms((m) => { const n = { ...m }; delete n[fresh.id]; return n; });
+    apiCache.invalidate("orders:"); apiCache.invalidate("documents:");
+  };
+  async function addPayment(inv) {
+    const f = payForm(inv);
+    if (!(Number(f.amount) > 0) || !f.paidDate) { toast.error(t("payInvalid")); return; }
+    setPayBusy(inv.id);
+    try {
+      // accountId 'pph23' = PPh 23 the client withheld (bukti potong), not cash.
+      const isPph = f.accountId === "pph23";
+      applyInvoice(await api.invoices.addPayment(inv.id, isPph
+        ? { amount: Number(f.amount), paidDate: f.paidDate, kind: "pph23", withholdingRef: f.ref || null }
+        : { amount: Number(f.amount), paidDate: f.paidDate, accountId: Number(f.accountId || cashAccts.defaultId) || null }));
+      toast.success(t("payRecorded"));
+    } catch (e) { toast.error(e.message); }
+    finally { setPayBusy(null); }
+  }
+  async function deletePayment(inv, p) {
+    if (!confirm(t("payDeleteConfirm"))) return;
+    setPayBusy(inv.id);
+    try { applyInvoice(await api.invoices.deletePayment(inv.id, p.id)); }
+    catch (e) { toast.error(e.message); }
+    finally { setPayBusy(null); }
+  }
+  const rp = (n) => `Rp${Number(n || 0).toLocaleString("id-ID")}`;
   const rowsWithoutInvoice = rows.filter((r) => !r.invoiceId);
 
   // ─── Save / cancel ────────────────────────────────────────────────────
@@ -204,11 +292,48 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     };
   }
 
+  // Create mode → POST /api/orders (vehicles[] = one row per unit, shared dates/status).
+  function buildCreatePayload() {
+    return {
+      customerName: cust.customerName.trim(),
+      customerType: cust.customerType,
+      companyName: cust.customerType === "company" ? cust.companyName.trim() : null,
+      customerPhone: cust.customerPhone.trim() || null,
+      customerEmail: cust.customerEmail.trim() || null,
+      pickupDate: val(0, "pickupDate"),
+      returnDate: val(0, "returnDate"),
+      totalDays: daysBetween(val(0, "pickupDate"), val(0, "returnDate")) || 1,
+      status: val(0, "status"),
+      vehicles: items.map((it, i) => ({
+        carId: val(i, "carId") ? Number(val(i, "carId")) : null,
+        driverId: val(i, "driverId") ? Number(val(i, "driverId")) : null,
+        package: val(i, "package"),
+        destination: val(i, "destination"),
+        pickupLocation: val(i, "pickupLocation") || null,
+        totalPrice: Number(val(i, "totalPrice")) || 0,
+        overnightNights: Number(val(i, "overnightNights")) || 0,
+        overtimeHours: Number(val(i, "overtimeHours")) || 0,
+        bailout: Number(val(i, "bailout")) || 0,
+        notes: val(i, "notes") || null,
+      })),
+    };
+  }
+
   async function handleSave() {
     if (saving) return;
     const miss = validate();
     if (miss.length) { toast.error(`${t("requiredMissing")}: ${miss.join(", ")}`); return; }
     setSaving(true);
+    if (isNew) {
+      try {
+        const res = await api.orders.create(buildCreatePayload());
+        apiCache.invalidate("orders:");
+        toast.success(`${t("bookingSaved")}${res?.orderNumber ? ` — ${res.orderNumber}` : ""}`);
+        onSaved?.();
+      } catch (err) { toast.error(err.message); }
+      finally { setSaving(false); }
+      return;
+    }
     try {
       // Invoices first — if one fails, the order edit is not applied either.
       for (const inv of Object.values(invoices)) {
@@ -237,7 +362,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     }
   }
 
-  const cancellable = rows.some((r) => !["completed", "cancelled"].includes(r.status));
+  const cancellable = !isNew && rows.some((r) => !["completed", "cancelled"].includes(r.status));
   async function handleCancelOrder() {
     if (!confirm(t("cancelBookingConfirm"))) return;
     setCancelling(true);
@@ -256,7 +381,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
   const Label = ({ idx, f, children, req }) => (
     <div className="flex items-center gap-1.5 mb-1 h-[18px] min-w-0">
       <span className="text-[11px] font-semibold text-slate-600 truncate">{children}{req && <span className="text-red-500"> *</span>}</span>
-      {isGroup && idx === 0 && f && (
+      {isGroup && idx === 0 && f && !FORCED.has(f) && (
         <input type="checkbox" checked={synced.has(f)} onChange={() => toggleSync(f)}
           title={t("syncAllHint")} aria-label={t("syncAllHint")}
           className="ml-auto cursor-pointer h-3.5 w-3.5 flex-shrink-0 accent-[var(--color-primary,#DC2626)]" />
@@ -264,7 +389,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
     </div>
   );
   const inp = "w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm bg-white disabled:bg-slate-100 disabled:text-slate-500";
-  const locked = (idx, f) => idx > 0 && synced.has(f);
+  const locked = (idx, f) => idx > 0 && isSynced(f);
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -273,9 +398,9 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
         <div className="flex items-center justify-between p-5 border-b border-slate-100 flex-shrink-0">
           <div>
             <h2 className="text-lg font-bold text-slate-900">
-              {t("editBooking")} — <span className="font-mono text-primary">{first.orderNumber}</span>
+              {isNew ? t("newOrder") : <>{t("editBooking")} — <span className="font-mono text-primary">{first.orderNumber}</span></>}
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">{rows.length} {t("vehicles")} · {t("mandatoryNote")}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{items.length} {t("vehicles")} · {t("mandatoryNote")}</p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer">
             <span className="material-symbols-outlined">close</span>
@@ -301,6 +426,10 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
                 <datalist id="bem-company-list">{companies.map((n) => <option key={n} value={n} />)}</datalist></div>
               <div><Label>{t("phone")}</Label>
                 <input className={inp} value={cust.customerPhone} onChange={(e) => setC("customerPhone", e.target.value)} /></div>
+              {isNew && (
+                <div><Label>{t("email")}</Label>
+                  <input type="email" className={inp} value={cust.customerEmail} onChange={(e) => setC("customerEmail", e.target.value)} /></div>
+              )}
             </div>
           </section>
 
@@ -311,7 +440,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
               {items.map((it, idx) => {
                 const days = daysBetween(val(idx, "pickupDate"), val(idx, "returnDate"));
                 return (
-                  <div key={it.orderId} className="border border-slate-200 rounded-lg p-3 bg-slate-50/50">
+                  <div key={it.key} className="border border-slate-200 rounded-lg p-3 bg-slate-50/50">
                     {isGroup && (
                       <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
                         <p className="text-xs font-bold text-slate-600">
@@ -320,6 +449,15 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
                         {idx === 0 && (
                           <span className="text-[10px] text-slate-400 inline-flex items-center gap-1">
                             <span className="inline-block h-3 w-3 border border-slate-400 rounded-sm" />= {t("syncAllHint")}
+                          </span>
+                        )}
+                        {isNew && idx > 0 && (
+                          <span className="inline-flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400">{t("followsVehicle1")}</span>
+                            <button type="button" onClick={() => removeVehicle(idx)} title={t("removeVehicle")}
+                              className="text-slate-400 hover:text-red-600 cursor-pointer">
+                              <span className="material-symbols-outlined text-[18px]">delete</span>
+                            </button>
                           </span>
                         )}
                       </div>
@@ -356,8 +494,16 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-3 mb-1">{t("sectionOptional")}</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                       <div><Label idx={idx} f="totalPrice">{t("kontrakHarga")}</Label>
-                        <input type="number" min="0" step="any" className={inp} value={val(idx, "totalPrice")} disabled={locked(idx, "totalPrice")}
-                          onChange={(e) => setItem(idx, "totalPrice", e.target.value)} /></div>
+                        <div className="flex gap-1">
+                          <input type="number" min="0" step="any" className={inp} value={val(idx, "totalPrice")} disabled={locked(idx, "totalPrice")}
+                            onChange={(e) => setItem(idx, "totalPrice", e.target.value)} />
+                          {!locked(idx, "totalPrice") && (
+                            <button type="button" onClick={() => priceFromRateCard(idx)} disabled={pricingIdx === idx} title={t("prc_fromRateCard")}
+                              className="px-2 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 cursor-pointer disabled:opacity-50">
+                              <span className="material-symbols-outlined text-[18px]">sell</span>
+                            </button>
+                          )}
+                        </div></div>
                       <div><Label idx={idx} f="pickupLocation">{t("pickupLocation")}</Label>
                         <input className={inp} value={val(idx, "pickupLocation")} disabled={locked(idx, "pickupLocation")}
                           onChange={(e) => setItem(idx, "pickupLocation", e.target.value)} /></div>
@@ -383,10 +529,17 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
                 );
               })}
               <datalist id="bem-paket">{PACKAGES.map((p) => <option key={p} value={p} />)}</datalist>
+              {isNew && items.length < MAX_VEHICLES && (
+                <button type="button" onClick={addVehicle}
+                  className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-sm text-slate-600 hover:bg-slate-50 cursor-pointer inline-flex items-center justify-center gap-1.5">
+                  <span className="material-symbols-outlined text-[18px]">add</span>{t("addVehicle")}
+                </button>
+              )}
             </div>
           </section>
 
-          {/* Invoice */}
+          {/* Invoice (edit mode only) */}
+          {!isNew && (
           <section>
             <h3 className="text-sm font-bold text-slate-800 mb-2 flex items-center gap-1.5">
               <span className="material-symbols-outlined text-[18px] text-primary">receipt</span>{t("invoiceSection")}
@@ -415,6 +568,57 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
                       <input type="date" className={inp} value={f.paidDate || ""} disabled={!f.sentDate}
                         onChange={(e) => setInvForms((m) => ({ ...m, [inv.id]: { ...m[inv.id], paidDate: e.target.value } }))} /></div>
                   </div>
+
+                  {/* Payments — partial or full */}
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap text-xs mb-2">
+                      <span className="font-bold text-slate-700">{t("payments")}</span>
+                      <span className="text-slate-500">
+                        {t("payTotal")} <b className="text-slate-700">{rp(inv.totalAmount)}</b> · {t("payPaid")} <b className="text-emerald-700">{rp(inv.paidAmount)}</b> · {t("payRemaining")} <b className="text-red-600">{rp(inv.remainingAmount)}</b>
+                      </span>
+                    </div>
+                    {(inv.payments || []).length > 0 && (
+                      <ul className="divide-y divide-slate-100 mb-2">
+                        {inv.payments.map((p) => (
+                          <li key={p.id} className="flex items-center justify-between gap-2 py-1.5 text-xs">
+                            <span className="text-slate-600">{formatDate(p.paidDate)}</span>
+                            <span className="font-mono text-slate-800">{rp(p.amount)}{p.kind === "pph23" && <span className="ml-1 text-[10px] text-indigo-600">PPh 23{p.withholdingRef ? ` · ${p.withholdingRef}` : ""}</span>}</span>
+                            <button type="button" onClick={() => deletePayment(inv, p)} disabled={payBusy === inv.id}
+                              className="text-slate-400 hover:text-red-600 cursor-pointer disabled:opacity-50" title={t("delete")}>
+                              <span className="material-symbols-outlined text-[16px]">close</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {!inv.paidDate && (
+                      inv.sentDate ? (() => {
+                        const pf = payForm(inv);
+                        return (
+                          <div className={`grid grid-cols-1 gap-2 items-center ${cashAccts.accounts.length ? "sm:grid-cols-[1fr_1fr_1fr_auto]" : "sm:grid-cols-[1fr_1fr_auto]"}`}>
+                            <input type="date" className={inp} value={pf.paidDate} onChange={(e) => setPayForm(inv, { paidDate: e.target.value })} />
+                            <input type="number" min="0" step="any" className={inp} value={pf.amount} placeholder={`${t("payAmount")} · ${t("payRemaining")} ${rp(inv.remainingAmount)}`}
+                              onChange={(e) => setPayForm(inv, { amount: e.target.value })} />
+                            {cashAccts.accounts.length > 0 && (
+                              <select className={inp} value={pf.accountId || cashAccts.defaultId || ""} title={t("payIntoAccount")}
+                                onChange={(e) => setPayForm(inv, { accountId: e.target.value, ...(e.target.value === "pph23" && !pf.amount && Number(inv.pphAmount) > 0 ? { amount: String(Number(inv.pphAmount)) } : {}) })}>
+                                {cashAccts.accounts.map((a) => <option key={a.id} value={a.id}>{t("payInto")} {a.name}</option>)}
+                                <option value="pph23">{t("payPph23")}</option>
+                              </select>
+                            )}
+                            {pf.accountId === "pph23" && (
+                              <input className={`${inp} sm:col-span-full`} value={pf.ref || ""} placeholder={t("payPph23Ref")} onChange={(e) => setPayForm(inv, { ref: e.target.value })} />
+                            )}
+                            <button type="button" onClick={() => addPayment(inv)} disabled={payBusy === inv.id}
+                              className="px-3 py-2 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 cursor-pointer whitespace-nowrap">
+                              {payBusy === inv.id ? t("loadingShort") : t("payRecord")}
+                            </button>
+                          </div>
+                        );
+                      })() : <p className="text-[11px] text-slate-400">{t("payNeedsSent")}</p>
+                    )}
+                  </div>
+                  <OnlinePaymentBox invoice={inv} onPaid={() => api.invoices.get(inv.id).then(applyInvoice).catch(() => {})} />
                   <div className="flex items-center justify-between gap-2 mt-2 flex-wrap">
                     <p className="text-[11px] text-slate-400">{t("invTermNote").replace("{n}", inv.paymentTermDays ?? "-")}</p>
                     {!inv.paidDate && inv.sentDate && (
@@ -437,6 +641,7 @@ export default function BookingEditModal({ rows, cars = [], drivers = [], onClos
               </div>
             )}
           </section>
+          )}
         </div>
 
         {/* Footer */}

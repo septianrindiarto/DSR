@@ -61,7 +61,7 @@ const errorMessageMap = {
     'Invalid email or password': 'Email atau password salah.',
     'Invalid password': 'Password salah. Silakan coba lagi.',
     'User not found': 'Akun tidak ditemukan.',
-    'Password is too short': 'Password terlalu pendek. Minimal 6 karakter.',
+    'Password is too short': 'Password terlalu pendek. Minimal 8 karakter.',
     // Better Auth emits these when requireEmailVerification = true and the
     // user hasn't activated yet. Surface the friendly Indonesian gate.
     'Email not verified': 'Email Anda belum diverifikasi. Cek inbox untuk link aktivasi.',
@@ -82,11 +82,51 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * does not leave the UI hanging on a spinner indefinitely. Aborted requests
  * surface a friendly Indonesian message rather than a raw DOMException.
  */
-async function request(endpoint, options = {}) {
+// ─── Busy tracking + double-submit guard ─────────────────────────────────────
+// Every request is counted so the app can show a top loading bar
+// (components/ApiActivityBar.jsx). A mutation (POST/PUT/PATCH/DELETE) fired
+// again with the SAME endpoint + body while the first is still running joins
+// the first one instead of hitting the server twice — the safety net behind
+// buttons that forget to disable themselves (double "Simpan" on slow Neon).
+const activity = { reads: 0, writes: 0 };
+const activityListeners = new Set();
+const emitActivity = () => { const snap = { ...activity }; activityListeners.forEach((fn) => { try { fn(snap); } catch { /* ignore */ } }); };
+export const apiActivity = {
+    get: () => ({ ...activity }),
+    subscribe(fn) { activityListeners.add(fn); return () => activityListeners.delete(fn); },
+};
+const inflightWrites = new Map();
+
+function request(endpoint, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase();
+    const isWrite = method !== 'GET' && method !== 'HEAD';
+    // FormData bodies can't be compared cheaply → never deduped (uploads).
+    const key = isWrite && !(options.body instanceof FormData) && !options.allowDuplicate
+        ? `${method} ${endpoint} ${typeof options.body === 'string' ? options.body : ''}` : null;
+    if (key && inflightWrites.has(key)) return inflightWrites.get(key);
+
+    // silent: background polling (notification bell) — no top loading bar, and
+    // X-Background tells the server it is not user activity (idle timeout).
+    if (options.silent) options = { ...options, headers: { ...(options.headers || {}), 'X-Background': '1' } };
+    const bucket = isWrite ? 'writes' : 'reads';
+    // quiet: user activity (keep-alive ping) without the loading bar.
+    const counted = !options.silent && !options.quiet;
+    if (counted) { activity[bucket] += 1; emitActivity(); }
+    const p = rawRequest(endpoint, options).finally(() => {
+        if (counted) { activity[bucket] = Math.max(0, activity[bucket] - 1); emitActivity(); }
+        if (key) inflightWrites.delete(key);
+    });
+    if (key) inflightWrites.set(key, p);
+    return p;
+}
+
+async function rawRequest(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
     const {
         timeout = DEFAULT_TIMEOUT_MS,
         signal: externalSignal,
+        // eslint-disable-next-line no-unused-vars
+        allowDuplicate, skipAuthInterceptor, silent, quiet,
         ...restOptions
     } = options;
 
@@ -143,7 +183,7 @@ async function request(endpoint, options = {}) {
         if (response.status === 401 && !options.skipAuthInterceptor) {
             try {
                 window.dispatchEvent(new CustomEvent('auth:expired', {
-                    detail: { endpoint, rawMsg },
+                    detail: { endpoint, rawMsg, code: errBody.code || null, device: errBody.device || null },
                 }));
             } catch (_) { /* SSR / Node guard */ }
         }
@@ -160,6 +200,18 @@ async function request(endpoint, options = {}) {
 }
 
 
+// Private documents (SIM/KTP, finance files, legal docs) are never public
+// links: fetch with the session cookie and open the blob in a new tab.
+async function openPrivateFile(path) {
+    const res = await fetch(`${API_BASE}${path}`, { credentials: 'include' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export const api = {
     get: (endpoint) => request(endpoint),
     post: (endpoint, data) => request(endpoint, { method: 'POST', body: data instanceof FormData ? data : JSON.stringify(data) }),
@@ -169,6 +221,8 @@ export const api = {
     // Cars
     cars: {
         listPublic: () => api.get('/api/cars/public'),
+        summary: () => api.get('/api/cars/public/summary'),
+        availability: (days = 7) => api.get(`/api/cars/public/availability?days=${days}`),
         list: (params = '') => api.get(`/api/cars?${params}`),
         get: (id) => api.get(`/api/cars/${id}`),
         create: (data) => api.post('/api/cars', data),
@@ -180,10 +234,17 @@ export const api = {
         uploadImages: (formData) => api.post('/api/cars/upload', formData),
         exportData: () => api.get('/api/cars/data/export'),
         importData: (data) => api.post('/api/cars/data/import', data),
+        // Vehicle types per agency (Armada → Kelola tipe).
+        types: () => api.get('/api/cars/types'),
+        saveTypes: (types, renames = []) => api.put('/api/cars/types', { types, renames }),
     },
 
     // Orders
     orders: {
+        // Driver trip log (staff view) + private photos / receipts
+        trip: (id) => api.get(`/api/orders/${id}/trip`),
+        openTripPhoto: (id, phase, idx) => openPrivateFile(`/api/orders/${id}/trip/photo/${phase}/${idx}`),
+        openExpenseReceipt: (id, expenseId) => openPrivateFile(`/api/orders/${id}/expense/${expenseId}/receipt`),
         list: (params = '') => api.get(`/api/orders?${params}`),
         get: (id) => api.get(`/api/orders/${id}`),
         createPublic: (data) => api.post('/api/orders/public', data),
@@ -200,6 +261,10 @@ export const api = {
         updateBookingItems: (items) => api.put('/api/orders/booking-items', { items }),
         // Unified ✏️ edit form: { customer?, items: [...], force? } — single order or whole booking.
         updateBooking: (data) => api.put('/api/orders/booking-update', data),
+        // Inline single-cell edit: { orderIds, field, value, expectedUpdatedAt?, force? }
+        updateField: (data) => api.put('/api/orders/field', data),
+        // Row edit: several columns at once, one transaction ({ changes: [{ orderIds, field, value }] }).
+        updateFields: (data) => api.put('/api/orders/fields', data),
         // Tier 2 multi-vehicle: cancel an entire booking by its order code.
         cancelBooking: (orderNumber) => api.put(`/api/orders/booking/${encodeURIComponent(orderNumber)}/cancel`, {}),
         // Tier 2 multi-vehicle: delete an entire booking by its order code.
@@ -239,10 +304,17 @@ export const api = {
         stats: () => api.get('/api/customers/stats'),
         exportData: () => api.get('/api/customers/data/export'),
         importData: (data) => api.post('/api/customers/data/import', data),
+        // UU PDP: erase identifying data, keep orders/invoices.
+        anonymize: (id) => api.post(`/api/customers/${id}/anonymize`, {}),
     },
 
     // Drivers
     drivers: {
+        // Driver app login (agency side)
+        appAccess: (id) => api.get(`/api/drivers/${id}/app-access`),
+        grantAppAccess: (id, email, password) => api.post(`/api/drivers/${id}/app-access`, { email, password }),
+        resetAppPassword: (id, password) => api.put(`/api/drivers/${id}/app-access/password`, { password }),
+        revokeAppAccess: (id) => api.delete(`/api/drivers/${id}/app-access`),
         list: (params = '') => api.get(`/api/drivers?${params}`),
         available: () => api.get('/api/drivers/available'),
         get: (id) => api.get(`/api/drivers/${id}`),
@@ -251,6 +323,8 @@ export const api = {
         bulkStatus: (ids, status) => api.put('/api/drivers/bulk-status', { ids, status }),
         delete: (id) => api.delete(`/api/drivers/${id}`),
         upload: (id, formData) => api.post(`/api/drivers/${id}/upload`, formData),
+        // kind: licenseDoc | idCard | photo
+        openDocument: (id, kind) => openPrivateFile(`/api/drivers/${id}/document/${kind}`),
         stats: () => api.get('/api/drivers/stats'),
         exportData: () => api.get('/api/drivers/data/export'),
         importData: (data) => api.post('/api/drivers/data/import', data),
@@ -302,6 +376,7 @@ export const api = {
         delete: (id) => api.delete(`/api/finance/${id}`),
         stats: () => api.get('/api/finance/stats'),
         upload: (formData) => api.post('/api/finance/upload', formData),
+        openFile: (id) => openPrivateFile(`/api/finance/${id}/file`),
         exportData: () => api.get('/api/finance/data/export'),
         importData: (data) => api.post('/api/finance/data/import', data),
     },
@@ -348,14 +423,8 @@ export const api = {
 
     // Rekap → DB sync (Google Drive Excel migration)
     sync: {
-        runRekap: () => api.post('/api/sync/rekap', {}),
-        uploadRekap: (file) => {
-            const fd = new FormData();
-            fd.append('file', file);
-            return api.post('/api/sync/rekap/upload', fd);
-        },
-        logs: () => api.get('/api/sync/logs'),
-        status: () => api.get('/api/sync/status'),
+        // Rekap.xlsx sync (runRekap/uploadRekap/logs/status) was removed —
+        // only the invoice-queue endpoints remain under /api/sync.
         ordersNeedingInvoice: () => api.get('/api/sync/orders/needs-invoice'),
         markInvoiceGenerated: (id, data) => api.put(`/api/sync/orders/${id}/invoice`, data),
         bulkMarkInvoiceGenerated: (data) => api.post('/api/sync/orders/bulk-invoice', data),
@@ -366,7 +435,8 @@ export const api = {
         // signUp goes through OUR custom endpoint so phone/customerType/
         // companyName/accountType are captured + a customers row is created.
         signUp: (data) => api.post('/api/auth/register-extended', data),
-        signIn: (data) => api.post('/api/auth/sign-in/email', data),
+        // force: take over a login that has been idle ≥ 5 min on another device (owner 2026-11-13).
+        signIn: (data, { force = false } = {}) => request('/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify(data), ...(force ? { headers: { 'X-Force-Login': '1' } } : {}) }),
         signOut: () => api.post('/api/auth/sign-out', {}),
         // skipAuthInterceptor: this probe runs on every page load to detect
         // an already-logged-in user. A 401 here just means "not logged in",
@@ -375,6 +445,15 @@ export const api = {
         // Email verification — token comes from the activation link.
         verifyEmail: (token) => api.get(`/api/auth/verify-email?token=${encodeURIComponent(token)}`),
         sendVerification: (email) => api.post('/api/auth/send-verification-email', { email }),
+        // Two-step verification (Better Auth twoFactor plugin, TOTP).
+        twoFactor: {
+            enable: (password) => api.post('/api/auth/two-factor/enable', { password }),
+            disable: (password) => api.post('/api/auth/two-factor/disable', { password }),
+            verifyTotp: (code, trustDevice = false, { force = false } = {}) => request('/api/auth/two-factor/verify-totp', { method: 'POST', body: JSON.stringify({ code, trustDevice }), ...(force ? { headers: { 'X-Force-Login': '1' } } : {}) }),
+            verifyBackupCode: (code, { force = false } = {}) => request('/api/auth/two-factor/verify-backup-code', { method: 'POST', body: JSON.stringify({ code }), ...(force ? { headers: { 'X-Force-Login': '1' } } : {}) }),
+            generateBackupCodes: (password) => api.post('/api/auth/two-factor/generate-backup-codes', { password }),
+        },
+        changePassword: (currentPassword, newPassword) => api.post('/api/auth/change-password', { currentPassword, newPassword, revokeOtherSessions: true }),
     },
 
     // User Management
@@ -384,12 +463,33 @@ export const api = {
         update: (id, data) => api.put(`/api/users/${id}`, data),
         delete: (id) => api.delete(`/api/users/${id}`),
         resetPassword: (id, password) => api.post(`/api/users/${id}/reset-password`, { password }),
+        resendVerification: (id) => api.post(`/api/users/${id}/resend-verification`, {}),
+        // RBAC v2
+        myAccess: () => api.get('/api/users/me/access'),
+        accessTemplates: (orgId) => api.get(`/api/users/access/templates${orgId ? `?orgId=${orgId}` : ''}`),
+        forkTemplate: (data) => api.post('/api/users/access/templates/fork', data),
+        saveTemplate: (data) => data.id ? api.put(`/api/users/access/templates/${data.id}`, data) : api.post('/api/users/access/templates', data),
+        deleteTemplate: (id) => api.delete(`/api/users/access/templates/${id}`),
+        setDefaultTemplate: (templateKey) => api.put('/api/users/access/default-template', { templateKey }),
+        accessAudit: () => api.get('/api/users/access/audit'),
+        getAccess: (id) => api.get(`/api/users/${id}/access`),
+        setAccess: (id, data) => api.put(`/api/users/${id}/access`, data),
+    },
+
+    // Agency legal documents (RBAC v2 onboarding). Files are private: they are
+    // fetched as a blob with the session cookie, never via a public URL.
+    legal: {
+        get: () => api.get('/api/orgs/legal'),
+        update: (data) => api.put('/api/orgs/legal', data),
+        upload: (doc, file) => { const fd = new FormData(); fd.append('file', file); return api.post(`/api/orgs/legal/file/${doc}`, fd); },
+        openFile: (doc) => openPrivateFile(`/api/orgs/legal/file/${doc}`),
     },
 
     // Self profile (Phase 4B)
     me: {
         get: () => api.get('/api/users/me'),
         update: (data) => api.put('/api/users/me', data),
+        exportData: () => api.get('/api/users/me/export'),
     },
 
     // Org invite codes (Phase 4A) + company info (Phase 4B)
@@ -401,6 +501,8 @@ export const api = {
         updateInfo: (data) => api.put('/api/orgs/my-info', data),
         // Reserve the next company-wide letter number (No.YY/DSR/NNN).
         nextLetterNumber: () => api.post('/api/orgs/next-letter-number', {}),
+        // Surat pengantar number of a kode transaksi (reused if it already has one).
+        letterNumberForCode: (code) => api.post('/api/orgs/letter-number-for-code', { code }),
         // Stage 2 — client ↔ agency relationships + affiliate / agency codes.
         myAgencies: () => api.get('/api/orgs/my-agencies'),
         addAgency: (agencyCode) => api.post('/api/orgs/my-agencies', { agencyCode }),
@@ -427,9 +529,226 @@ export const api = {
         byOrder: (orderId) => api.get(`/api/invoices/by-order/${orderId}`),
         update: (id, data) => api.put(`/api/invoices/${id}`, data),
         reissue: (id, reason) => api.post(`/api/invoices/${id}/reissue`, { reason: reason || null }),
+        // Cancel (agency admin; unpaid, not in a terbit faktur) — codes go back to 'belum invoice'.
+        cancel: (id, reason) => api.post(`/api/invoices/${id}/cancel`, { reason }),
+        addPayment: (id, data) => api.post(`/api/invoices/${id}/payments`, data),
+        deletePayment: (id, paymentId) => api.delete(`/api/invoices/${id}/payments/${paymentId}`),
         terms: () => api.get('/api/invoices/terms'),
         setDefaultTerm: (days) => api.put('/api/invoices/terms/default', { days }),
         setCompanyTerm: (orgId, days) => api.put(`/api/invoices/terms/company/${orgId}`, { days }),
+        cashAccounts: () => api.get('/api/invoices/cash-accounts'),
+        paymentLinks: (id) => api.get(`/api/invoices/${id}/payment-links`),
+        createPaymentLink: (id, payerEmail) => api.post(`/api/invoices/${id}/payment-link`, { payerEmail: payerEmail || null }),
+        // Tax profile (lib/tax.js): agency default + per client; resolve = what applies to a client.
+        tax: () => api.get('/api/invoices/tax'),
+        resolveTax: (clientOrgId) => api.get(`/api/invoices/tax/resolve${clientOrgId ? `?clientOrgId=${clientOrgId}` : ''}`),
+        setDefaultTax: (profile) => api.put('/api/invoices/tax/default', { profile }),
+        setCompanyTax: (orgId, profile) => api.put(`/api/invoices/tax/company/${orgId}`, { profile }),
+    },
+
+    // Faktur Pajak (Dokumen → Faktur Pajak): one faktur = 1..n invoices of one buyer in one masa.
+    faktur: {
+        list: (params = {}) => api.get(`/api/faktur?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        candidates: (params = {}) => api.get(`/api/faktur/candidates?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        get: (id) => api.get(`/api/faktur/${id}`),
+        create: (data) => api.post('/api/faktur', data),
+        update: (id, data) => api.put(`/api/faktur/${id}`, data),
+        cancel: (id, reason) => api.post(`/api/faktur/${id}/cancel`, { reason: reason || null }),
+        replace: (id) => api.post(`/api/faktur/${id}/replace`, {}),
+        uploadFile: (id, file) => { const fd = new FormData(); fd.append('file', file); return api.post(`/api/faktur/${id}/file`, fd); },
+        openFile: (id) => openPrivateFile(`/api/faktur/${id}/file`),
+        exportCsv: (masa) => openPrivateFile(`/api/faktur/export.csv${masa ? `?masa=${masa}` : ''}`),
+    },
+
+    // Driver app (/driver) — the logged-in driver's own data.
+    driverApp: {
+        me: () => api.get('/api/driver-app/me'),
+        assignments: () => api.get('/api/driver-app/assignments'),
+        startTrip: (orderId, formData) => api.post(`/api/driver-app/trips/${orderId}/start`, formData),
+        finishTrip: (orderId, formData) => api.post(`/api/driver-app/trips/${orderId}/finish`, formData),
+        expenses: () => api.get('/api/driver-app/expenses'),
+        addExpense: (formData) => api.post('/api/driver-app/expenses', formData),
+    },
+
+    // Long-term contracts (Kontrak).
+    contracts: {
+        list: (status = '') => api.get(`/api/contracts${status ? `?status=${status}` : ''}`),
+        get: (id) => api.get(`/api/contracts/${id}`),
+        create: (data) => api.post('/api/contracts', data),
+        update: (id, data) => api.put(`/api/contracts/${id}`, data),
+        setStatus: (id, status) => api.put(`/api/contracts/${id}/status`, { status }),
+        billingPreview: (id, period, kmOverrides) => api.post(`/api/contracts/${id}/billing/preview`, { period, kmOverrides: kmOverrides || {} }),
+        issueBilling: (id, data) => api.post(`/api/contracts/${id}/billing`, data),
+        // Workflow: both sides approve; required documents (defined by one side, uploaded by the other).
+        approve: (id, side) => api.post(`/api/contracts/${id}/approve`, side ? { side } : {}),
+        addDocument: (id, data) => api.post(`/api/contracts/${id}/documents`, data),
+        updateDocument: (id, docId, data) => api.put(`/api/contracts/${id}/documents/${docId}`, data),
+        removeDocument: (id, docId) => api.delete(`/api/contracts/${id}/documents/${docId}`),
+        uploadDocument: (id, docId, file) => { const fd = new FormData(); fd.append('file', file); return api.post(`/api/contracts/${id}/documents/${docId}/file`, fd); },
+        openDocument: (id, docId) => openPrivateFile(`/api/contracts/${id}/documents/${docId}/file`),
+        removeDocumentFile: (id, docId) => api.delete(`/api/contracts/${id}/documents/${docId}/file`),
+        invoices: (id) => api.get(`/api/contracts/${id}/invoices`),
+        // Monthly M codes (one per unit per month), List Data, audit trail, amendments.
+        monthly: (params = {}) => api.get(`/api/contracts/monthly?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        monthlyRecalc: (billingId, km) => api.post(`/api/contracts/monthly/${billingId}/recalc`, { km: km === '' || km == null ? null : km }),
+        monthlyGenerate: (contractId) => api.post('/api/contracts/monthly/generate', { contractId }),
+        // Form → Kontrak: monthly M detail form (fill → both sides approve → invoiceable).
+        // Replacement units per contract unit (maintenance / emergency).
+        replacements: (id) => api.get(`/api/contracts/${id}/replacements`),
+        addReplacement: (id, data) => api.post(`/api/contracts/${id}/replacements`, data),
+        endReplacement: (rid, endDate) => api.post(`/api/contracts/replacements/${rid}/end`, { endDate: endDate || null }),
+        monthlyGet: (billingId) => api.get(`/api/contracts/monthly/${billingId}`),
+        monthlySave: (billingId, data) => api.put(`/api/contracts/monthly/${billingId}`, data),
+        monthlyApprove: (ids, side) => api.post('/api/contracts/monthly/approve', { ids, ...(side ? { side } : {}) }),
+        monthlyReject: (ids, reason, side) => api.post('/api/contracts/monthly/reject', { ids, reason, ...(side ? { side } : {}) }),
+        monthlyComment: (billingId, text) => api.post(`/api/contracts/monthly/${billingId}/comments`, { text }),
+        monthlyAddEvidence: (billingId, formData) => request(`/api/contracts/monthly/${billingId}/evidence`, { method: 'POST', body: formData, timeout: 120_000 }),
+        monthlyOpenEvidence: (billingId, idx) => openPrivateFile(`/api/contracts/monthly/${billingId}/evidence/${idx}`),
+        monthlyRemoveEvidence: (billingId, idx) => api.delete(`/api/contracts/monthly/${billingId}/evidence/${idx}`),
+        codes: (params = {}) => api.get(`/api/contracts/codes?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        audit: (params = {}) => api.get(`/api/contracts/audit?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        amend: (id, startDate) => api.post(`/api/contracts/${id}/amend`, startDate ? { startDate } : {}),
+        supersede: (id, endDate) => api.post(`/api/contracts/${id}/supersede`, { endDate }),
+        reviewDocument: (id, docId, decision, note) => api.post(`/api/contracts/${id}/documents/${docId}/review`, { decision, note: note || null }),
+    },
+
+    // Rekap Operasional & Lembur (monthly contracts) — entries, evidence, R recaps.
+    ops: {
+        // Agency default lembur & perjalanan dinas (Pengaturan) — contracts without own terms + daily orders.
+        policyDefault: () => api.get('/api/ops/policy-default'),
+        setPolicyDefault: (policy) => api.put('/api/ops/policy-default', { policy }),
+        overview: (period) => api.get(`/api/ops/overview${period ? `?period=${period}` : ''}`),
+        contracts: () => api.get('/api/ops/contracts'),
+        list: (params = {}) => api.get(`/api/ops/entries?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        create: (formData) => request('/api/ops/entries', { method: 'POST', body: formData, timeout: 120_000 }),
+        update: (id, data) => api.put(`/api/ops/entries/${id}`, data),
+        remove: (id) => api.delete(`/api/ops/entries/${id}`),
+        comment: (id, text) => api.post(`/api/ops/entries/${id}/comments`, { text }),
+        addEvidence: (id, formData) => request(`/api/ops/entries/${id}/evidence`, { method: 'POST', body: formData, timeout: 120_000 }),
+        openEvidence: (id, idx) => openPrivateFile(`/api/ops/entries/${id}/evidence/${idx}`),
+        removeEvidence: (id, idx) => api.delete(`/api/ops/entries/${id}/evidence/${idx}`),
+        submit: (ids) => api.post('/api/ops/entries/submit', { ids }),
+        verify: (ids) => api.post('/api/ops/entries/verify', { ids }),
+        reject: (ids, reason, side) => api.post('/api/ops/entries/reject', { ids, reason, ...(side ? { side } : {}) }),
+        // Two-sided approval per form (agency + client). side only for superadmin.
+        approve: (ids, side) => api.post('/api/ops/entries/approve', { ids, ...(side ? { side } : {}) }),
+        // Dokumen → Invoice from approved form codes (L### lembur, R### operasional).
+        billingPending: () => api.get('/api/ops/billing/pending'),
+        billingLines: (codes) => api.get(`/api/ops/billing/lines?codes=${encodeURIComponent(codes)}`),
+        billingIssue: (data) => api.post('/api/ops/billing/issue', data),
+        recaps: (params = {}) => api.get(`/api/ops/recaps?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`),
+        recapPreview: (data) => api.post('/api/ops/recaps/preview', data),
+        createRecap: (data) => api.post('/api/ops/recaps', data),
+        recap: (id) => api.get(`/api/ops/recaps/${id}`),
+        refreshRecap: (id) => api.post(`/api/ops/recaps/${id}/refresh`, {}),
+        cancelRecap: (id) => api.post(`/api/ops/recaps/${id}/cancel`, {}),
+        approveRecap: (id) => api.post(`/api/ops/recaps/${id}/approve`, {}),
+        rejectRecapEntries: (id, ids, reason) => api.post(`/api/ops/recaps/${id}/reject-entries`, { ids, reason }),
+        holidays: (year) => api.get(`/api/ops/holidays${year ? `?year=${year}` : ''}`),
+        addHoliday: (data) => api.post('/api/ops/holidays', data),
+        removeHoliday: (id) => api.delete(`/api/ops/holidays/${id}`),
+    },
+
+    // Fleet care (Perawatan & Dokumen).
+    // In-app notifications per user + "Perlu tindakan" counters (dashboard, header bell).
+    // Login session rules (idle timeout warning, keep-alive after real use).
+    session: {
+        policy: () => api.get('/api/session/policy'),
+        ping: () => request('/api/session/ping', { method: 'POST', body: '{}', quiet: true, allowDuplicate: true }),
+        check: () => request('/api/session/policy', { silent: true }),
+    },
+    inbox: {
+        feed: (params = {}, { silent = false } = {}) => request(`/api/inbox?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()}`, { silent }),
+        read: (ids) => api.post('/api/inbox/read', ids ? { ids } : {}),
+        actions: ({ silent = false } = {}) => request('/api/inbox/actions', { silent }),
+    },
+    fleetCare: {
+        list: () => api.get('/api/fleet-care'),
+        update: (carId, data) => api.put(`/api/fleet-care/${carId}`, data),
+        readings: (carId) => api.get(`/api/fleet-care/${carId}/odometer`),
+        addReading: (carId, km, readingDate) => api.post(`/api/fleet-care/${carId}/odometer`, { km, readingDate: readingDate || null }),
+        recordService: (carId, data) => api.post(`/api/fleet-care/${carId}/service`, data),
+        // Maintenance schedule + emergency reports (owner 2026-11-13).
+        events: (carId) => api.get(`/api/fleet-care/${carId}/events`),
+        addMaintenance: (carId, data) => api.post(`/api/fleet-care/${carId}/maintenance`, data),
+        updateMaintenance: (id, data) => api.put(`/api/fleet-care/maintenance/${id}`, data),
+        removeMaintenance: (id) => api.delete(`/api/fleet-care/maintenance/${id}`),
+        incidents: (status = 'open') => api.get(`/api/fleet-care/incidents?status=${encodeURIComponent(status)}`),
+        reportIncident: (data) => api.post('/api/fleet-care/incidents', data),
+        resolveIncident: (id, resolution) => api.post(`/api/fleet-care/incidents/${id}/resolve`, { resolution: resolution || null }),
+    },
+
+    // Marketplace — ratings & agency profiles (Phase C).
+    marketplace: {
+        mine: () => api.get('/api/marketplace/reviews/mine'),
+        rate: (orderNumber, rating, comment) => api.post(`/api/marketplace/reviews/${encodeURIComponent(orderNumber)}`, { rating, comment: comment || null }),
+        agency: (id) => api.get(`/api/marketplace/agencies/${id}`),
+        myAgency: () => api.get('/api/marketplace/agency/me'),
+    },
+
+    // Online payment (Xendit).
+    payments: {
+        status: () => api.get('/api/payments/status'),
+        simulate: (linkId) => api.post(`/api/payments/links/${linkId}/simulate`, {}),
+    },
+
+    // Pricing engine (rate cards, zones, corporate rates) — Tarif.
+    pricing: {
+        meta: () => api.get('/api/pricing/meta'),
+        quote: (data) => api.post('/api/pricing/quote', data),
+        config: () => api.get('/api/pricing/config'),
+        saveRateCards: (rows) => api.put('/api/pricing/rate-cards', { rows }),
+        saveZones: (cities) => api.put('/api/pricing/zones', { cities }),
+        saveSettings: (data) => api.put('/api/pricing/settings', data),
+        corporate: (clientOrgId) => api.get(`/api/pricing/corporate/${clientOrgId}`),
+        saveCorporate: (clientOrgId, rates) => api.put(`/api/pricing/corporate/${clientOrgId}`, { rates }),
+    },
+
+    // Corporate portal (client companies) + monthly invoice (agency).
+    corporate: {
+        bookingRules: () => api.get('/api/corporate/booking-rules'),
+        settings: () => api.get('/api/corporate/settings'),
+        saveSettings: (data) => api.put('/api/corporate/settings', data),
+        addCostCenter: (data) => api.post('/api/corporate/cost-centers', data),
+        updateCostCenter: (id, data) => api.put(`/api/corporate/cost-centers/${id}`, data),
+        approvals: (status = 'waiting') => api.get(`/api/corporate/approvals?status=${status}`),
+        approvalsCount: () => api.get('/api/corporate/approvals/count'),
+        decide: (orderNumber, decision, note) => api.post(`/api/corporate/approvals/${encodeURIComponent(orderNumber)}`, { decision, note: note || null }),
+        spend: (year) => api.get(`/api/corporate/spend?year=${year}`),
+        monthlyPreview: (clientOrgId, month) => api.get(`/api/invoices/monthly/preview?clientOrgId=${clientOrgId}&month=${month}`),
+        issueMonthly: (data) => api.post('/api/invoices/monthly', data),
+        invoices: () => api.get('/api/corporate/invoices'),
+        report: (period) => api.get(`/api/corporate/report?period=${period}`),
+        sendReport: (period) => api.post('/api/corporate/report/send', { period }),
+        payInvoice: (id) => api.post(`/api/corporate/invoices/${id}/pay`, {}),
+    },
+
+    // Books v2 — double-entry journal + financial statements (Keuangan).
+    books: {
+        accounts: () => api.get('/api/books/accounts'),
+        seedAccounts: () => api.post('/api/books/accounts/seed', {}),
+        createAccount: (data) => api.post('/api/books/accounts', data),
+        updateAccount: (id, data) => api.put(`/api/books/accounts/${id}`, data),
+        deleteAccount: (id) => api.delete(`/api/books/accounts/${id}`),
+        suggest: (labels) => api.post('/api/books/import/suggest', { labels }),
+        importCashbook: (data) => api.post('/api/books/import/cashbook', data),
+        locks: () => api.get('/api/books/locks'),
+        lock: (year, month) => api.post('/api/books/locks', { year, month }),
+        unlock: (id) => api.delete(`/api/books/locks/${id}`),
+        // name: trial-balance | income-statement | balance-sheet | cash-flow | equity | ledger | insights
+        report: (name, params) => api.get(`/api/books/reports/${name}?${new URLSearchParams(params).toString()}`),
+        transactions: (params) => api.get(`/api/books/transactions?${new URLSearchParams(params).toString()}`),
+        transaction: (id) => api.get(`/api/books/transactions/${id}`),
+        createTx: (data) => api.post('/api/books/transactions', data),
+        updateTx: (id, data) => api.put(`/api/books/transactions/${id}`, data),
+        deleteTx: (id) => api.delete(`/api/books/transactions/${id}`),
+        postTx: (data) => api.post('/api/books/transactions/post', data),
+        deleteBatch: (batchId) => api.delete(`/api/books/batches/${encodeURIComponent(batchId)}`),
+        reverseTx: (id, data) => api.post(`/api/books/transactions/${id}/reverse`, data || {}),
+        quickTypes: () => api.get('/api/books/quick/types'),
+        quick: (data) => api.post('/api/books/quick', data),
+        autoStatus: () => api.get('/api/books/auto/status'),
+        autoResync: () => api.post('/api/books/auto/resync', {}),
     },
 
     // Access Requests (Phase 3)

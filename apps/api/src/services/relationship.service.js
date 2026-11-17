@@ -10,6 +10,20 @@ import { sendEmail } from './email.service.js';
 // after the first successful lookup, so it costs one query per process.
 // With a single agency (today's setup) this resolves to that agency, so
 // existing behaviour is unchanged.
+/**
+ * Agency induk = the client's home agency, and it is ALSO a real service
+ * relationship. Keep the two in step: whenever a client gets a parent agency,
+ * make sure an active client↔agency link exists (idempotent, never duplicates).
+ */
+export async function ensureParentLink(clientOrgId, agencyOrgId, byUserId = null) {
+    if (!clientOrgId || !agencyOrgId || clientOrgId === agencyOrgId) return;
+    try {
+        await db.insert(clientAgencyLinks)
+            .values({ clientOrgId, agencyOrgId, status: 'active', createdBy: byUserId })
+            .onConflictDoUpdate({ target: [clientAgencyLinks.clientOrgId, clientAgencyLinks.agencyOrgId], set: { status: 'active', approvalToken: null } });
+    } catch (e) { console.warn('[relationship] ensureParentLink failed:', e.message); }
+}
+
 let _defaultAgencyId = null;
 export async function resolveDefaultAgencyId() {
     if (_defaultAgencyId) return _defaultAgencyId;
@@ -103,9 +117,11 @@ export const relationshipService = {
     async addAgencyByCode(clientOrgId, agencyCode, byUserId) {
         const code = (agencyCode || '').trim().toUpperCase();
         if (!code) { const e = new Error('Kode agency wajib diisi'); e.status = 400; throw e; }
-        const [agency] = await db.select({ id: organizations.id })
+        const [agency] = await db.select({ id: organizations.id, legalStatus: organizations.legalStatus })
             .from(organizations).where(eq(organizations.agencyCode, code)).limit(1);
         if (!agency) { const e = new Error('Kode agency tidak ditemukan'); e.status = 404; throw e; }
+        // Agencies still in legal "setup" mode are not visible to clients yet.
+        if (agency.legalStatus === 'setup') { const e = new Error('Agency ini belum menyelesaikan verifikasi dokumen legal.'); e.status = 400; throw e; }
         await db.insert(clientAgencyLinks)
             .values({ clientOrgId, agencyOrgId: agency.id, status: 'active', createdBy: byUserId })
             .onConflictDoUpdate({
@@ -117,6 +133,8 @@ export const relationshipService = {
 
     // Agency adds a company client → 'pending' link + approval email to the client admin.
     async agencyAddClient(agencyOrgId, clientOrgId, byUserId) {
+        const [ag] = await db.select({ legalStatus: organizations.legalStatus }).from(organizations).where(eq(organizations.id, agencyOrgId)).limit(1);
+        if (ag?.legalStatus === 'setup') { const e = new Error('Lengkapi dokumen legal agency (Pengaturan → Dokumen Legal) sebelum menambah klien.'); e.status = 400; throw e; }
         const [client] = await db.select({ id: organizations.id, name: organizations.name, adminUserId: organizations.adminUserId })
             .from(organizations).where(eq(organizations.id, clientOrgId)).limit(1);
         if (!client) { const e = new Error('Klien tidak ditemukan'); e.status = 404; throw e; }
@@ -174,8 +192,12 @@ export const relationshipService = {
     async resolveAffiliate(affiliateCode) {
         const code = (affiliateCode || '').trim().toUpperCase();
         if (!code) return null;
+        // Only an AGENCY staff member's code routes an order (to their agency).
+        // A client user's code must never make a client company the "owner".
         const [u] = await db.select({ id: userTable.id, organizationId: userTable.organizationId })
-            .from(userTable).where(eq(userTable.affiliateCode, code)).limit(1);
+            .from(userTable)
+            .innerJoin(organizations, eq(organizations.id, userTable.organizationId))
+            .where(and(eq(userTable.affiliateCode, code), isNull(organizations.parentAgencyId), eq(userTable.isActive, true))).limit(1);
         return u || null;
     },
 };
